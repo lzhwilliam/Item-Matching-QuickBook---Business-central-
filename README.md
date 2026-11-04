@@ -4,6 +4,9 @@ A local web app that turns the **QuickBooks Imperial item list** into rows for t
 
 ## Run
 
+**Windows:** double-click `run.bat`. The first run creates `.venv` and installs the packages; after that it starts the app and opens the browser.
+
+**Any OS:**
 ```bash
 pip install -r requirements.txt
 python -m uvicorn app.main:app --port 8765
@@ -24,6 +27,13 @@ First time:
 | Settings | The FS database and the defaults (Customer No. C0004, Customer Name, No. of copy, first Entry No., …). |
 
 Each table has its own **version history**. Every save, upload, generate or restore creates a version, and you can see what changed in each cell, restore, or download any version.
+
+## Git: one commit per change (app/gitsync.py)
+Every saved version is written to `table_history/` (`imperial_label_bc.csv`, `quickbooks_source.csv`, `learned_rules.json`) and **committed to your local git repo**. Each commit message lists the cells that changed, and the commit id shows next to the save time in the toolbar.
+- Only `table_history/` is ever staged, so code you're editing is never swept into these commits.
+- To see the history, run `git log -p table_history/`, or open it in GitHub Desktop or VS Code.
+- **Settings → Git: push each commit** (default **Off**) also pushes each commit. Only turn it on if the GitHub repo is private, because it uploads your item data.
+- Git needs your name and email set once: `git config --global user.name "…"` and `git config --global user.email "…"`.
 
 ## Matching (app/matcher.py)
 1. **Learned rules**: customer code → item, or QuickBooks description → item (100%).

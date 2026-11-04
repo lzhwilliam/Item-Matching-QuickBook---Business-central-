@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .db import Store
+from .gitsync import commit_message, commit_version
 from .io_excel import read_upload, to_csv, to_xlsx
 from .learning import diff_rows, learn_from_edits
 from .matcher import BC_COLUMNS, BC_META, QB_COLUMNS, analyze, generate, new_rid
@@ -18,6 +19,8 @@ from .reference import Reference, load_fs_database, read_reference, save_referen
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("QBBC_DATA_DIR", ROOT / "data"))
 REF_PATH = DATA / "reference.json"
+HISTORY_DIR = Path(os.environ.get("QBBC_HISTORY_DIR", ROOT / "table_history"))
+GIT_ENABLED = os.environ.get("QBBC_GIT_AUTOCOMMIT", "1") != "0"
 
 TABLES = {
     "bc": {"label": "Imperial Label (BC)", "columns": BC_COLUMNS + BC_META, "sheet": "Imperial Item Label Master"},
@@ -82,8 +85,25 @@ def _save(name: str, columns: list[str], rows: list[dict], source: str, note: st
     n = _count_changes(cur["data"]["rows"], rows, columns)
     if n == 0 and cur["version_no"] > 0 and columns == cur["data"]["columns"]:
         return _payload(name, cur) | {"learned": msgs, "unchanged": True}
+    old_rows = cur["data"]["rows"]
     v = store.add_version(name, {"columns": columns, "rows": rows}, source, note, n)
-    return _payload(name, v) | {"learned": msgs}
+    return _payload(name, v) | {"learned": msgs, "git": _git_commit(name, v, old_rows, msgs)}
+
+
+def _git_commit(name: str, v: dict, old_rows: list[dict], learned: list[str]) -> dict | None:
+    """One git commit per saved version (see app/gitsync.py)."""
+    settings = store.settings()
+    if not GIT_ENABLED or settings.get("git_autocommit", "1") != "1":
+        return None
+    key = "Customer Item Code" if name == "bc" else "Customer Item No"
+    by_rid = {r.get("_rid"): r for r in v["data"]["rows"]}
+    changes = [c | {"key": by_rid.get(c["rid"], {}).get(key, "")}
+               for c in diff_rows(old_rows, v["data"]["rows"], v["data"]["columns"])["changed"]]
+    tables = {k: _current(k)["data"] for k in TABLES}
+    msg = commit_message(TABLES[name]["label"], v, changes, learned)
+    repo = HISTORY_DIR.parent
+    return commit_version(repo, HISTORY_DIR, tables, store.rules(), msg,
+                          push=settings.get("git_autopush", "0") == "1")
 
 
 # ------------------------------------------------------------------ static

@@ -14,6 +14,8 @@ DEFAULT_SETTINGS = {
     "entry_no_start": "1",
     "company_hint": "imperial",
     "token_rule_threshold": "2",
+    "git_autocommit": "1",
+    "git_autopush": "0",
 }
 
 SCHEMA = """

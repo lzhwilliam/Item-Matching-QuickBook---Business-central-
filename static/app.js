@@ -154,7 +154,10 @@ function makeGrid(name, payload) {
 function setVersion(name, p) {
   TABLES[name].version = p.version_no;
   const when = p.created_at ? new Date(p.created_at).toLocaleString() : "";
-  setSaveState(name, p.version_no ? `v${p.version_no} · ${p.source || ""} · ${when}` : "no versions yet");
+  let git = "";
+  if (p.git && p.git.commit) git = ` · git ${p.git.commit}` + (p.git.pushed === false ? " (push failed)" : p.git.pushed ? " (pushed)" : "");
+  setSaveState(name, p.version_no ? `v${p.version_no} · ${p.source || ""} · ${when}${git}` : "no versions yet", p.git && !p.git.ok ? "err" : "");
+  if (p.git && !p.git.ok) setSaveState(name, `v${p.version_no} saved · git commit failed: ${p.git.error}`, "err");
   if (name === "bc") updateBadge(p.analysis || []);
 }
 
