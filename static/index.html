@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Imperial Label Matcher</title>
+<link rel="stylesheet" href="/static/vendor/tabulator.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">QuickBooks → BC <span>Imperial Label Matcher</span></div>
+  <div id="refStatus" class="ref-status"></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="bc">Imperial Label (BC) <span id="badgeBc" class="badge"></span></button>
+  <button class="tab" data-tab="qb">QuickBooks Source</button>
+  <button class="tab" data-tab="rules">Learned Rules <span id="badgeRules" class="badge neutral"></span></button>
+  <button class="tab" data-tab="settings">Settings</button>
+</nav>
+
+<main>
+  <!-- ================= BC table ================= -->
+  <section id="tab-bc" class="panel active">
+    <div class="toolbar">
+      <button id="btnGenerate" class="primary">Generate from QuickBooks</button>
+      <select id="genMode" title="Generate mode">
+        <option value="replace">Replace table</option>
+        <option value="append_missing">Add missing items only</option>
+      </select>
+      <span class="sep"></span>
+      <label class="btn">Upload<input type="file" accept=".xlsx,.csv" data-upload="bc" hidden></label>
+      <div class="dropdown">
+        <button>Download ▾</button>
+        <div class="menu">
+          <a data-dl="bc" data-fmt="bc">BC import layout (.xlsx)</a>
+          <a data-dl="bc" data-fmt="xlsx">Full with confidence &amp; errors (.xlsx)</a>
+          <a data-dl="bc" data-fmt="csv">CSV (BC columns)</a>
+        </div>
+      </div>
+      <button data-addrow="bc">+ Row</button>
+      <button data-delrows="bc">Delete selected rows</button>
+      <button data-history="bc">History</button>
+      <span class="sep"></span>
+      <label class="chk"><input type="checkbox" id="onlyIssues"> Only rows with issues</label>
+      <input type="search" id="searchBc" placeholder="Search…">
+      <span class="grow"></span>
+      <span id="saveBc" class="save-state"></span>
+    </div>
+    <div class="legend">
+      <span>Confidence:</span>
+      <span class="ramp"><i style="background:#fff"></i><i style="background:var(--h1)"></i><i style="background:var(--h2)"></i><i style="background:var(--h3)"></i><i style="background:var(--h4)"></i></span>
+      <span>100% → ≤40%</span>
+      <span class="key err">error</span><span class="key warn">warning</span>
+      <span class="hint">Click a cell to select, double-click or type to edit. Paste ranges from Excel with Ctrl+V. Ctrl+Z undoes. Every save creates a version and teaches the matcher.</span>
+    </div>
+    <div id="gridBc" class="grid"></div>
+    <div id="detail" class="detail hidden"></div>
+  </section>
+
+  <!-- ================= QB table ================= -->
+  <section id="tab-qb" class="panel">
+    <div class="toolbar">
+      <label class="btn primary">Upload QuickBooks list<input type="file" accept=".xlsx,.csv" data-upload="qb" hidden></label>
+      <div class="dropdown">
+        <button>Download ▾</button>
+        <div class="menu">
+          <a data-dl="qb" data-fmt="xlsx">Excel (.xlsx)</a>
+          <a data-dl="qb" data-fmt="csv">CSV</a>
+        </div>
+      </div>
+      <button data-addrow="qb">+ Row</button>
+      <button data-delrows="qb">Delete selected rows</button>
+      <button data-history="qb">History</button>
+      <input type="search" id="searchQb" placeholder="Search…">
+      <span class="grow"></span>
+      <span id="saveQb" class="save-state"></span>
+    </div>
+    <div id="gridQb" class="grid"></div>
+  </section>
+
+  <!-- ================= Rules ================= -->
+  <section id="tab-rules" class="panel">
+    <div class="toolbar">
+      <a class="btn" href="/api/rules/export">Export rules (.json)</a>
+      <label class="btn">Import rules<input type="file" accept=".json" id="importRules" hidden></label>
+      <span class="hint">Rules are learned from your edits to the Imperial Label table and applied on the next “Generate”.</span>
+    </div>
+    <div class="rule-help">
+      <b>Customer code → item</b>: you changed Item No. for a customer code. ·
+      <b>Description → item</b>: same, keyed by the QuickBooks description. ·
+      <b>Field override</b>: you changed a field for one item; it's reused while the Item No. is the same. ·
+      <b>Token pattern</b>: the same word change seen ≥ N times (Settings) is applied to every row.
+    </div>
+    <div id="gridRules" class="grid short"></div>
+    <h3>Edit log</h3>
+    <div id="gridLog" class="grid short"></div>
+  </section>
+
+  <!-- ================= Settings ================= -->
+  <section id="tab-settings" class="panel">
+    <div class="cards">
+      <div class="card">
+        <h3>FS full database (reference)</h3>
+        <p id="refInfo"></p>
+        <label class="btn primary">Upload FS database .xlsx<input type="file" accept=".xlsx" id="refUpload" hidden></label>
+        <p class="hint">Reads the <b>Mixed Database</b> sheet by header name: TPC Number(Business central), Description, Cut Method, Cut Size/ Count, Pack Size, Total lb, Related RM (1), and the Company / Item Code pairs (“Sysco imperial” codes).</p>
+      </div>
+      <div class="card">
+        <h3>Defaults for generated rows</h3>
+        <form id="settingsForm">
+          <label>Customer No. <input name="customer_no"></label>
+          <label>Customer Name <input name="customer_name"></label>
+          <label>No. of copy <input name="no_of_copy"></label>
+          <label>First Entry No. <input name="entry_no_start"></label>
+          <label>Customer-code company contains <input name="company_hint"></label>
+          <label>Learn token pattern after N repeats <input name="token_rule_threshold"></label>
+          <button class="primary" type="submit">Save settings</button>
+        </form>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="historyDlg">
+  <div class="dlg-head"><h3 id="historyTitle">History</h3><button data-close>✕</button></div>
+  <div class="dlg-body">
+    <div id="versionList"></div>
+    <div id="versionDiff"></div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast"></div>
+
+<script src="/static/vendor/tabulator.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
