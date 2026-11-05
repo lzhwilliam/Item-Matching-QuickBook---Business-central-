@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .db import Store
@@ -142,7 +142,22 @@ def _git_commit(name: str, v: dict, old_rows: list[dict], learned: list[str]) ->
 # ------------------------------------------------------------------ static
 @app.get("/")
 def index():
-    return FileResponse(ROOT / "static" / "index.html")
+    # Stamp our own scripts/styles with their modification time so a browser can never run
+    # a stale copy after an update (it used to: cached app.js + new index.html).
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for asset in ("app.js", "style.css"):
+        stamp = int((ROOT / "static" / asset).stat().st_mtime)
+        html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={stamp}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """Browsers must re-check our static files (cheap 304s) instead of guessing they're fresh."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers.setdefault("Cache-Control", "no-cache")
+    return resp
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")

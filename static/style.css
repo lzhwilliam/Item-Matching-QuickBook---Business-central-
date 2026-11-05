@@ -109,6 +109,10 @@ input[type=search].wide { width: 340px; }
 #settingsForm input, #settingsForm select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; }
 .rule-help { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(1100px, 95vw); max-height: 88vh; }
+dialog.confirm-dlg { width: min(440px, 92vw); padding: 18px 20px 14px; }
+.confirm-dlg p { margin: 0 0 16px; font-size: 14px; line-height: 1.45; }
+.confirm-acts { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-acts button { padding: 6px 14px; }
 dialog::backdrop { background: rgba(10, 20, 40, .35); }
 .dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .dlg-head h3 { margin: 0; }

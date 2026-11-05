@@ -765,7 +765,7 @@ function bindSheetKeys() {
   document.addEventListener("keydown", (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     const name = activeSheet();
-    if (!name || $("#historyDlg").open) return;
+    if (!name || $("#historyDlg").open || $("#confirmDlg").open) return;
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
     const k = e.key.toLowerCase();
@@ -806,19 +806,55 @@ function addRow(name) {
   T.grid.addRow(blank, false).then((row) => T.grid.scrollToRow(row, "center", false));
 }
 
-function deleteSelected(name) {
+/** In-page replacement for window.confirm(): native popups are blocked in some
+ *  embedded browsers (e.g. the Claude app's browser pane), which silently cancelled actions. */
+let settleConfirm = null; // the open prompt's "answer" function, if any
+
+function askConfirm(message, okLabel = "OK") {
+  if (settleConfirm) settleConfirm(false); // never leave an earlier prompt (and its handlers) hanging
+  const dlg = $("#confirmDlg");
+  $("#confirmMsg").textContent = message;
+  $("#confirmOk").textContent = okLabel;
+  return new Promise((resolve) => {
+    const done = (v) => {
+      if (settleConfirm !== done) return;
+      settleConfirm = null;
+      $("#confirmOk").removeEventListener("click", ok);
+      $("#confirmCancel").removeEventListener("click", no);
+      dlg.removeEventListener("keydown", key);
+      dlg.removeEventListener("cancel", esc);
+      if (dlg.open) dlg.close();
+      resolve(v);
+    };
+    const ok = () => done(true);
+    const no = () => done(false);
+    // Esc is handled here rather than via the dialog's "close" event, which some embedded browsers never fire
+    const esc = (e) => { e.preventDefault(); done(false); };
+    const key = (e) => { if (e.key === "Escape") esc(e); };
+    settleConfirm = done;
+    $("#confirmOk").addEventListener("click", ok);
+    $("#confirmCancel").addEventListener("click", no);
+    dlg.addEventListener("keydown", key);
+    dlg.addEventListener("cancel", esc);
+    dlg.showModal();
+    $("#confirmOk").focus(); // Enter = OK
+  });
+}
+
+async function deleteSelected(name) {
   const T = TABLES[name];
   const rows = new Set();
   (T.grid.getRanges ? T.grid.getRanges() : []).forEach((r) => r.getRows().forEach((row) => rows.add(row)));
   if (!rows.size) { toast("Select cells in the rows to delete first (click / drag on the row numbers)."); return; }
-  if (!confirm(`Delete ${rows.size} row(s)? (A new version is saved; you can restore from History.)`)) return;
+  if (!(await askConfirm(`Delete ${rows.size} row(s)? (A new version is saved; you can restore from History.)`, "Delete"))) return;
   T.suppress++;
   Promise.all([...rows].map((r) => r.delete())).finally(() => { T.suppress--; onUserChange(name, `Delete ${rows.size} row(s)`); });
 }
 
 async function generate() {
   const mode = $("#genMode").value;
-  if (mode === "replace" && TABLES.bc.grid.getDataCount() && !confirm("Regenerate the whole Imperial label table from the QuickBooks source? (The current table stays in History.)")) return;
+  if (mode === "replace" && TABLES.bc.grid.getDataCount()
+      && !(await askConfirm("Regenerate the whole Imperial label table from the QuickBooks source? (The current table stays in History.)", "Regenerate"))) return;
   $("#btnGenerate").disabled = true;
   toast("Matching…");
   try {
@@ -869,7 +905,7 @@ async function showDiff(v) {
 }
 
 async function restore(v) {
-  if (!confirm(`Restore v${v}? This saves it as a new version, so it can be undone.`)) return;
+  if (!(await askConfirm(`Restore v${v}? This saves it as a new version, so it can be undone.`, "Restore"))) return;
   await flushSave(histName);
   const before = TABLES[histName].version;
   const p = await postJSON(`/api/table/${histName}/restore`, { version: v });
@@ -908,7 +944,7 @@ async function loadRules() {
         { title: "Learned from", field: "origin", width: 150 },
         { title: "Updated", field: "updated_at", width: 160 },
         { title: "", width: 70, headerSort: false, formatter: () => "<button>Delete</button>",
-          cellClick: async (e, c) => { if (confirm("Delete this rule?")) { await api(`/api/rules/${c.getRow().getData().id}`, { method: "DELETE" }); loadRules(); } } },
+          cellClick: async (e, c) => { if (await askConfirm("Delete this rule?", "Delete")) { await api(`/api/rules/${c.getRow().getData().id}`, { method: "DELETE" }); loadRules(); } } },
       ],
     });
     logGrid = new Tabulator("#gridLog", {
