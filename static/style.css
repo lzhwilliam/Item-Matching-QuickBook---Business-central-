@@ -68,6 +68,28 @@ input[type=search].wide { width: 340px; }
 .tabulator .tabulator-cell.cell-err { box-shadow: inset 0 0 0 2px var(--err); }
 .tabulator .tabulator-cell.cell-warn { box-shadow: inset 0 0 0 2px var(--warn); }
 .tabulator .tabulator-cell.cell-meta { color: var(--muted); }
+/* ---- spreadsheet bar: formats, undo/redo, formula bar ---- */
+.sheetbar { margin-bottom: 6px; display: flex; flex-direction: column; gap: 5px; }
+.fmt-tools { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.fmt-tools button, .fmt-tools select { padding: 3px 8px; min-width: 30px; }
+.fmt-tools button:disabled { opacity: .45; cursor: default; }
+.fmt-tools .sep { width: 1px; height: 22px; background: var(--line); margin: 0 3px; }
+.fmt-tools .ico-a { font-weight: 700; text-decoration: underline; text-decoration-color: #c00000; text-decoration-thickness: 3px; }
+.fmt-tools .ico-fill { display: inline-block; width: 14px; height: 12px; background: #ffff00; border: 1px solid #9aa4b5; vertical-align: -1px; }
+.menu.swatches { min-width: 0; width: 196px; padding: 8px; display: none; grid-template-columns: repeat(6, 26px); gap: 4px; }
+.dropdown:hover .menu.swatches, .dropdown:focus-within .menu.swatches { display: grid; }
+.swatches button { width: 26px; height: 22px; min-width: 0; padding: 0; border: 1px solid #b8c0cc; border-radius: 3px; }
+.swatches .none, .swatches .more { grid-column: span 3; width: auto; font-size: 12px; text-align: center; background: #fff; padding: 2px; }
+.swatches .more { border: 1px solid var(--line); border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; }
+.swatches .more input { width: 22px; height: 18px; padding: 0; border: 0; background: none; }
+.fbar { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: #fff; }
+.fbar .fx-addr { min-width: 64px; padding: 4px 8px; border-right: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+.fbar .fx { padding: 4px 8px; font-style: italic; font-family: Georgia, serif; color: var(--muted); border-right: 1px solid var(--line); }
+.fbar .fx-input { flex: 1; min-width: 0; border: 0; padding: 4px 8px; font: 12.5px/1.4 ui-monospace, Consolas, monospace; outline: none; }
+.fbar:focus-within { border-color: var(--accent); }
+.tabulator .tabulator-cell.cell-fx { position: relative; }
+.tabulator .tabulator-cell.cell-fx::after { content: ""; position: absolute; top: 0; right: 0; border-left: 6px solid transparent; border-top: 6px solid #2e7d32; }
+.tabulator .tabulator-cell .cell-edit { width: 100%; height: 100%; padding: 4px; border: 1px solid var(--accent); font: inherit; box-sizing: border-box; }
 .tabulator-row.tabulator-selected .tabulator-cell { background: transparent; }
 .conf-pill { font-weight: 600; }
 .err-text { color: var(--err); } .warn-text { color: #a86400; }
@@ -124,7 +146,8 @@ dialog::backdrop { background: rgba(10, 20, 40, .35); }
   .panel.active { flex: none; min-height: auto; }
   .grid { flex: none; height: 65vh !important; min-height: 300px; } /* beats Tabulator's inline height:100% */
   .grid.short { height: 45vh !important; }
-  .toolbar .sep { display: none; }
+  .toolbar .sep, .fmt-tools .sep { display: none; }
+  .fmt-tools [data-act="clear"], .fmt-tools [data-act="fill"] { font-size: 12px; }
   .toolbar > input[type=search], input[type=search].wide { flex: 1 1 100%; width: auto; }
   .legend .hint { display: none; }
   .dlg-body { grid-template-columns: 1fr; } #versionList { border-right: none; border-bottom: 1px solid var(--line); }

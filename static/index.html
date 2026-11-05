@@ -60,6 +60,7 @@
       <div class="dropdown">
         <button>Download ▾</button>
         <div class="menu">
+          <a data-dl="bc" data-fmt="original"><b>Original format</b> — as uploaded, with formulas &amp; formats</a>
           <a data-dl="bc" data-fmt="bc">BC import layout (.xlsx)</a>
           <a data-dl="bc" data-fmt="xlsx">Full with confidence &amp; errors (.xlsx)</a>
           <a data-dl="bc" data-fmt="csv">CSV (BC columns)</a>
@@ -79,8 +80,9 @@
       <span class="ramp"><i style="background:#fff"></i><i style="background:var(--h1)"></i><i style="background:var(--h2)"></i><i style="background:var(--h3)"></i><i style="background:var(--h4)"></i></span>
       <span>100% → ≤40%</span>
       <span class="key err">error</span><span class="key warn">warning</span>
-      <span class="hint">Click a cell to select, double-click or type to edit. Paste ranges from Excel with Ctrl+V. Ctrl+Z undoes. Every save creates a version and teaches the matcher.</span>
+      <span class="hint">Click a cell to select, double-click or type to edit. Paste ranges from Excel with Ctrl+V. Start with = for a formula (green corner = formula cell). Ctrl+Z / Ctrl+Y undo and redo; Ctrl+B/I/U format; Ctrl+D fills down. Every save creates a version and teaches the matcher.</span>
     </div>
+    <div class="sheetbar" data-sheetbar="bc"></div>
     <div id="gridBc" class="grid"></div>
     <div id="detail" class="detail hidden"></div>
   </section>
@@ -92,6 +94,7 @@
       <div class="dropdown">
         <button>Download ▾</button>
         <div class="menu">
+          <a data-dl="qb" data-fmt="original"><b>Original format</b> — as uploaded, with formulas &amp; formats</a>
           <a data-dl="qb" data-fmt="xlsx">Excel (.xlsx)</a>
           <a data-dl="qb" data-fmt="csv">CSV</a>
         </div>
@@ -103,6 +106,7 @@
       <span class="grow"></span>
       <span id="saveQb" class="save-state"></span>
     </div>
+    <div class="sheetbar" data-sheetbar="qb"></div>
     <div id="gridQb" class="grid"></div>
   </section>
 
@@ -113,6 +117,7 @@
       <label class="chk"><input type="checkbox" id="fsColFilters"> Column filters</label>
       <select id="fsStatus" title="Item status"><option value="">All statuses</option></select>
       <button id="fsClear">Clear</button>
+      <a class="btn" href="/api/reference/original" title="The FS database workbook exactly as uploaded">Download original file</a>
       <span class="grow"></span>
       <span id="fsCount" class="save-state"></span>
     </div>
@@ -177,6 +182,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="/static/vendor/tabulator.min.js"></script>
+<script src="/static/vendor/hyperformula.full.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

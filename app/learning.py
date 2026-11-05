@@ -34,6 +34,50 @@ def diff_rows(old_rows: list[dict], new_rows: list[dict], columns: list[str]) ->
     return {"changed": changed, "added": added, "removed": removed}
 
 
+STYLE_NAMES = (("b", "bold"), ("i", "italic"), ("u", "underline"))
+
+
+def style_desc(st) -> str:
+    if not st:
+        return "(none)"
+    parts = [n for k, n in STYLE_NAMES if st.get(k)]
+    for k, label in (("color", "font #"), ("fill", "fill #"), ("numFmt", "format "), ("align", "align ")):
+        if st.get(k):
+            parts.append(f"{label}{st[k]}")
+    if st.get("wrap"):
+        parts.append("wrap")
+    return ", ".join(parts) or "(none)"
+
+
+def _same_formula(a: str, a_row, b: str, b_row) -> bool:
+    if a == b:
+        return True
+    from .xlsx_export import move_formula  # local import: avoids a cycle at import time
+    return bool(a and b and a_row and b_row) and move_formula(a, "A", a_row, b_row) == b
+
+
+def diff_meta(old_rows: list[dict], new_rows: list[dict]) -> list[dict]:
+    """Formula (_f) and format (_s) changes per cell. Kept apart from diff_rows so
+    learning keeps looking at values only."""
+    old = {r.get("_rid"): r for r in old_rows if r.get("_rid")}
+    out = []
+    for r in new_rows:
+        o = old.get(r.get("_rid"))
+        if o is None:
+            continue
+        fa, fb = o.get("_f") or {}, r.get("_f") or {}
+        for c in sorted(set(fa) | set(fb)):
+            if not _same_formula(fa.get(c, ""), o.get("_fr"), fb.get(c, ""), r.get("_fr")):
+                out.append({"rid": r["_rid"], "col": c, "kind": "formula",
+                            "old": fa.get(c, "") or "(value)", "new": fb.get(c, "") or "(value)"})
+        sa, sb = o.get("_s") or {}, r.get("_s") or {}
+        for c in sorted(set(sa) | set(sb)):
+            if (sa.get(c) or {}) != (sb.get(c) or {}):
+                out.append({"rid": r["_rid"], "col": c, "kind": "format",
+                            "old": style_desc(sa.get(c)), "new": style_desc(sb.get(c))})
+    return out
+
+
 def _s(v) -> str:
     if v is None:
         return ""

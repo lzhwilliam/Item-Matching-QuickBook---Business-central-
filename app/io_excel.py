@@ -25,25 +25,37 @@ def _cell_str(v) -> str:
     return str(v).strip()
 
 
-def read_upload(filename: str, content: bytes, known_columns: list[str]) -> tuple[list[str], list[dict]]:
-    """Return (columns, rows). Finds the header row (BC exports have 2 title rows),
-    keeps codes as text, drops blank/unnamed columns."""
-    name = filename.lower()
-    if name.endswith((".xlsx", ".xlsm")):
+def is_xlsx(filename: str) -> bool:
+    return filename.lower().endswith((".xlsx", ".xlsm"))
+
+
+def _read_grid(filename: str, content: bytes) -> list[list[str]]:
+    if is_xlsx(filename):
         wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
         ws = wb.worksheets[0]
         grid = [[_cell_str(c) for c in r] for r in ws.iter_rows(values_only=True)]
         wb.close()
-    else:
-        text = None
-        for enc in ("utf-8-sig", "cp1252", "latin-1"):
-            try:
-                text = content.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        grid = [[c.strip() for c in r] for r in csv.reader(io.StringIO(text))]
+        return grid
+    text = None
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = content.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    return [[c.strip() for c in r] for r in csv.reader(io.StringIO(text))]
 
+
+def read_upload(filename: str, content: bytes, known_columns: list[str]) -> tuple[list[str], list[dict]]:
+    """Return (columns, rows). Finds the header row (BC exports have 2 title rows),
+    keeps codes as text, drops blank/unnamed columns."""
+    ordered, rows, _ = _parse_grid(_read_grid(filename, content), known_columns)
+    return ordered, rows
+
+
+def _parse_grid(grid: list[list[str]], known_columns: list[str]):
+    """-> (ordered columns, rows, positions) where positions holds the header index,
+    the kept (grid column index, column) pairs and each row's grid row index."""
     known = {_norm(c): c for c in known_columns}
     header_idx = 0
     best = -1
@@ -62,17 +74,119 @@ def read_upload(filename: str, content: bytes, known_columns: list[str]) -> tupl
             continue
         cols.append(canon)
         keep.append((j, canon))
-    rows = []
-    for r in grid[header_idx + 1:]:
+    rows, src = [], []
+    for i, r in enumerate(grid[header_idx + 1:], start=header_idx + 1):
         if not any(x.strip() for x in r):
             continue
         row = {c: (r[j] if j < len(r) else "") for j, c in keep}
         rows.append(row)
+        src.append(i)
     for row in rows:
         _fix_codes(row)
     # known columns first, in canonical order, then any extras
     ordered = [c for c in known_columns if c in cols] + [c for c in cols if c not in known_columns]
-    return ordered, rows
+    return ordered, rows, {"header_idx": header_idx, "keep": keep, "src": src, "headers": headers}
+
+
+# ------------------------------------------------------------------ formulas & formatting
+# A cell's platform format: b/i/u (1), color/fill ("RRGGBB"), numFmt, align (left|center|right), wrap (1)
+STYLE_KEYS = ("b", "i", "u", "color", "fill", "numFmt", "align", "wrap")
+
+
+def _rgb(color) -> str | None:
+    try:
+        if color is not None and color.type == "rgb" and isinstance(color.rgb, str) and len(color.rgb) >= 6:
+            return color.rgb[-6:].upper()
+    except AttributeError:
+        pass
+    return None  # theme / indexed colours are left to the original file
+
+
+def style_of(cell) -> dict:
+    """The platform-editable part of an openpyxl cell's style (only non-defaults)."""
+    s = {}
+    f = cell.font
+    if f is not None:
+        if f.b:
+            s["b"] = 1
+        if f.i:
+            s["i"] = 1
+        if f.u:
+            s["u"] = 1
+        c = _rgb(f.color)
+        if c and c != "000000":
+            s["color"] = c
+    fl = cell.fill
+    if fl is not None and fl.fill_type == "solid":
+        c = _rgb(fl.fgColor)
+        if c:
+            s["fill"] = c
+    if cell.number_format and cell.number_format != "General":
+        s["numFmt"] = cell.number_format
+    a = cell.alignment
+    if a is not None:
+        if a.horizontal in ("left", "center", "right"):
+            s["align"] = a.horizontal
+        if a.wrap_text:
+            s["wrap"] = 1
+    return s
+
+
+def formula_text(v) -> str | None:
+    if isinstance(v, str) and v.startswith("=") and len(v) > 1:
+        return v
+    text = getattr(v, "text", None)  # ArrayFormula
+    if isinstance(text, str) and text.startswith("="):
+        return text
+    return None
+
+
+def read_upload_rich(filename: str, content: bytes, known_columns: list[str]) -> tuple[list[str], list[dict], dict]:
+    """Like read_upload, plus what's needed to give the file back in its own layout:
+    per-row formulas (_f, anchored at Excel row _fr) and formats (_s), and a
+    ``sheet`` description (header row, column positions, widths, ...)."""
+    grid = _read_grid(filename, content)
+    ordered, rows, pos = _parse_grid(grid, known_columns)
+    header_row = pos["header_idx"] + 1
+    col_pos = {c: j + 1 for j, c in pos["keep"]}
+    sheet = {"kind": "xlsx" if is_xlsx(filename) else "csv", "header_row": header_row, "col_pos": col_pos,
+             "last_row": (pos["src"][-1] + 1) if pos["src"] else header_row, "file_name": filename,
+             "max_col": max([len(r) for r in grid] + [0])}
+    for r, i in zip(rows, pos["src"]):
+        r["_row"] = i + 1  # original Excel/CSV row; dropped after the template layout is applied
+    if not is_xlsx(filename):
+        sheet["title_rows"] = grid[:pos["header_idx"]]
+        sheet["header"] = list(pos["headers"])
+        for r in rows:
+            r.pop("_row", None)
+        return ordered, rows, sheet
+
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    ws = wb.worksheets[0]
+    sheet["sheet_name"] = ws.title
+    widths = {}
+    for c, j in col_pos.items():
+        dim = ws.column_dimensions.get(get_column_letter(j))
+        if dim is not None and dim.width:
+            widths[c] = round(float(dim.width), 2)
+    sheet["col_widths"] = widths
+    for r in rows:
+        er = r["_row"]
+        fs, ss = {}, {}
+        for c, j in col_pos.items():
+            cell = ws.cell(row=er, column=j)
+            f = formula_text(cell.value)
+            if f:
+                fs[c] = f
+            st = style_of(cell)
+            if st:
+                ss[c] = st
+        if fs:
+            r["_f"], r["_fr"] = fs, er
+        if ss:
+            r["_s"] = ss
+    wb.close()
+    return ordered, rows, sheet
 
 
 def _fix_codes(row: dict):

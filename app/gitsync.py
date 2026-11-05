@@ -41,6 +41,15 @@ def write_snapshot(folder: Path, tables: dict, rules: list[dict]):
             continue
         cols = [c for c in t["columns"] if not c.startswith("_")]
         (folder / fname).write_bytes(to_csv(cols, t["rows"]).replace(b"\r\n", b"\n"))
+        # formulas, formats and the original file layout, next to the CSV so commits show them
+        meta_rows = [{k: r[k] for k in ("_rid", "_row", "_fr", "_f", "_s") if r.get(k)}
+                     for r in t["rows"] if r.get("_f") or r.get("_s")]
+        meta_file = folder / fname.replace(".csv", "_meta.json")
+        if meta_rows or t.get("sheet"):
+            meta = {"sheet": t.get("sheet"), "rows": meta_rows}
+            meta_file.write_text(json.dumps(meta, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        elif meta_file.exists():
+            meta_file.unlink()
     slim = [{k: r[k] for k in ("kind", "rkey", "value", "enabled", "origin")} for r in rules]
     slim.sort(key=lambda r: (r["kind"], r["rkey"]))
     (folder / "learned_rules.json").write_text(json.dumps(slim, indent=2, ensure_ascii=False) + "\n")

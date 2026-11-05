@@ -26,6 +26,13 @@ First time:
 | Learned Rules | What the matcher has learned from your edits, with usage counts. You can turn rules on or off, delete them, or export/import them as JSON. |
 | Settings | The FS database and the defaults (Customer No. C0004, Customer Name, No. of copy, first Entry No., …). |
 
+## Excel features (Imperial Label and QuickBooks tables)
+- **Formulas**: type `=` to enter one (e.g. `=D4*2`); the formula bar shows the selected cell's address and formula. Formulas uploaded from Excel/OneDrive are kept. Cells are calculated in the browser by HyperFormula (`static/vendor`, GPLv3). A green corner marks a formula cell. **Fill down** (Ctrl+D) copies the top cell down, shifting references like Excel. Addresses follow the uploaded sheet, so sorting or filtering the grid doesn't change them.
+- **Formatting**: bold/italic/underline (Ctrl+B/I/U), font and fill colour, number format, alignment, wrap, Clear formats, column widths.
+- **Undo/redo**: Ctrl+Z / Ctrl+Y (or the buttons) step back through edits, pastes, formulas, formats, row changes, Generate, uploads and restores.
+- **Download → Original format** gives the table back in the file you uploaded. It keeps the other sheets, title rows, column order and widths, styles, formulas and helper columns, and applies the formats you set in the platform. Excel recalculates when it opens the file. A CSV upload comes back as CSV in its own layout. Tables never uploaded come back as a new workbook with your formulas and formats. The original upload is stored in `data/templates/`. Tables uploaded before this feature need to be uploaded once more to get their layout.
+- The FS Mix Database tab has **Download original file**.
+
 Each table has its own **version history**. Every save, upload, generate or restore creates a version, and you can see what changed in each cell, restore, or download any version.
 
 ## Git: one commit per change (app/gitsync.py)
