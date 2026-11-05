@@ -419,6 +419,136 @@ async function loadRules() {
   }
 }
 
+// ---------------------------------------------------------------- navigation / sidebar
+const MOBILE = window.matchMedia("(max-width: 760px)");
+
+function showTab(t) {
+  $$(".tab[data-tab]").forEach((x) => x.classList.toggle("active", x.dataset.tab === t));
+  $$(".panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + t));
+  if (TABLES[t]?.grid) TABLES[t].grid.redraw(true);
+  if (t === "rules") loadRules();
+  if (t === "fs") { if (fsData) fsGrid?.redraw(true); else loadFs(); }
+  localStorage.setItem("qbbc.tab", t);
+  if (MOBILE.matches) setNavOpen(false);
+}
+
+function setNavOpen(open) {
+  document.body.classList.toggle("nav-open", open);
+  $("#navToggle").setAttribute("aria-expanded", String(open));
+}
+
+function setCollapsed(collapsed, remember = true) {
+  document.body.classList.toggle("nav-collapsed", collapsed);
+  $("#collapseBtn").title = collapsed ? "Expand menu" : "Collapse menu";
+  $("#collapseBtn").setAttribute("aria-label", $("#collapseBtn").title);
+  $("#navToggle").setAttribute("aria-expanded", String(!collapsed));
+  if (remember) localStorage.setItem("qbbc.navCollapsed", collapsed ? "1" : "0");
+  setTimeout(redrawVisibleGrids, 220); // after the width transition
+}
+
+function redrawVisibleGrids() {
+  Object.values(TABLES).forEach((T) => T.grid && T.grid.element.offsetParent && T.grid.redraw());
+  [fsGrid, rulesGrid, logGrid].forEach((g) => g && g.element.offsetParent && g.redraw());
+}
+
+function bindSidebar() {
+  const saved = localStorage.getItem("qbbc.navCollapsed");
+  setCollapsed(saved == null ? window.innerWidth < 1100 : saved === "1", false);
+  $("#navToggle").addEventListener("click", () => {
+    if (MOBILE.matches) setNavOpen(!document.body.classList.contains("nav-open"));
+    else setCollapsed(!document.body.classList.contains("nav-collapsed"));
+  });
+  $("#collapseBtn").addEventListener("click", () => setCollapsed(!document.body.classList.contains("nav-collapsed")));
+  $("#navBackdrop").addEventListener("click", () => setNavOpen(false));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("nav-open")) setNavOpen(false); });
+  MOBILE.addEventListener("change", () => { setNavOpen(false); setTimeout(redrawVisibleGrids, 50); });
+  let rz;
+  window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(redrawVisibleGrids, 150); });
+}
+
+// ---------------------------------------------------------------- FS Mix Database (read-only browser)
+let fsGrid = null, fsData = null, fsTimer = null, fsTerms = [], fsRe = null;
+const normH = (h) => String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const reEsc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+async function loadFs() {
+  $("#fsCount").textContent = "loading…";
+  try {
+    fsData = await api("/api/reference/sheet");
+  } catch (e) { $("#fsCount").textContent = "failed: " + e.message; return; }
+  const { columns, rows } = fsData;
+  fsData.rowObjs = rows.map((r) => {
+    const o = { _row: r[0] };
+    columns.forEach((_, i) => { o["c" + i] = r[i + 1] ?? ""; });
+    o._hay = r.slice(1).join("\u0001").toLowerCase();
+    return o;
+  });
+  fsData.itemCol = columns.findIndex((c) => normH(c) === "tpcnumberbusinesscentral");
+  fsData.statusCol = columns.findIndex((c) => normH(c) === "itemstatus");
+  const sel = $("#fsStatus");
+  const statuses = fsData.statusCol < 0 ? [] : [...new Set(fsData.rowObjs.map((o) => o["c" + fsData.statusCol]).filter(Boolean))].sort();
+  sel.innerHTML = `<option value="">All statuses</option>` + statuses.map((v) => `<option>${esc(v)}</option>`).join("");
+  sel.hidden = !statuses.length;
+  $("#fsNote").innerHTML = !columns.length
+    ? `<span class="err-text">FS database not loaded yet.</span> Upload it under <b>Settings</b>.`
+    : fsData.partial
+      ? `Showing the key columns only. Re-upload the FS database under <b>Settings</b> to see every column of the <b>Mixed Database</b> sheet.`
+      : "";
+  buildFsGrid();
+}
+
+function fsHighlight(cell) {
+  const v = esc(cell.getValue());
+  return fsRe && v ? v.replace(fsRe, "<mark>$1</mark>") : v;
+}
+
+function buildFsGrid() {
+  const { columns } = fsData;
+  const filters = $("#fsColFilters").checked;
+  const cols = [{ title: "Row", field: "_row", width: 58, hozAlign: "right", frozen: true, sorter: "number", cssClass: "cell-meta",
+    tooltip: () => "Row number in the Excel sheet" }];
+  const order = columns.map((_, i) => i);
+  if (fsData.itemCol > 0) { order.splice(fsData.itemCol, 1); order.unshift(fsData.itemCol); }
+  for (const i of order) {
+    const col = {
+      title: columns[i], field: "c" + i, maxWidth: 380, minWidth: 60, formatter: fsHighlight, sorter: "alphanum",
+      tooltip: (e, c) => (String(c.getValue() || "").length > 40 ? String(c.getValue()) : ""),
+      frozen: i === fsData.itemCol && !MOBILE.matches,
+    };
+    if (filters) { col.headerFilter = "input"; col.headerFilterPlaceholder = "filter…"; }
+    cols.push(col);
+  }
+  if (fsGrid) fsGrid.destroy();
+  fsGrid = new Tabulator("#gridFs", {
+    data: fsData.rowObjs, index: "_row", columns: cols, layout: "fitData", height: "100%",
+    nestedFieldSeparator: false, columnDefaults: { headerSort: true, resizable: "header", headerHozAlign: "left" },
+    selectableRange: 1, selectableRangeColumns: true, selectableRangeRows: true,
+    clipboard: "copy", clipboardCopyStyled: false, clipboardCopyRowRange: "range",
+    clipboardCopyConfig: { rowHeaders: false, columnHeaders: false },
+    placeholder: fsData.columns.length ? "No rows match your search." : "FS database not loaded — upload it under Settings.",
+  });
+  fsGrid.on("tableBuilt", applyFsFilter);
+  fsGrid.on("dataFiltered", (f, rows) => updateFsCount(rows.length));
+}
+
+function applyFsFilter() {
+  if (!fsGrid || !fsData) return;
+  fsTerms = ($("#searchFs").value || "").toLowerCase().split(/\s+/).filter(Boolean);
+  fsRe = fsTerms.length ? new RegExp("(" + fsTerms.map((t) => reEsc(esc(t))).join("|") + ")", "gi") : null;
+  const status = $("#fsStatus").value;
+  const sk = "c" + fsData.statusCol;
+  if (!fsTerms.length && !status) fsGrid.clearFilter();
+  else fsGrid.setFilter((d) => (!status || d[sk] === status) && fsTerms.every((t) => d._hay.includes(t)));
+  fsGrid.getRows("visible").forEach((r) => r.reformat());
+  updateFsCount(fsGrid.getDataCount("active"));
+}
+
+function updateFsCount(n) {
+  if (!fsData) return;
+  const total = fsData.rowObjs.length;
+  $("#fsCount").textContent = `${n === total ? total : `${n} of ${total}`} rows` + (fsData.source_file ? ` · ${fsData.source_file}` : "");
+}
+
 // ---------------------------------------------------------------- settings / state
 async function refreshState() {
   const s = await api("/api/state");
@@ -432,13 +562,16 @@ async function refreshState() {
 }
 
 function bind() {
-  $$(".tab").forEach((b) => b.addEventListener("click", () => {
-    $$(".tab").forEach((x) => x.classList.toggle("active", x === b));
-    $$(".panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + b.dataset.tab));
-    const t = b.dataset.tab;
-    if (TABLES[t]?.grid) TABLES[t].grid.redraw(true);
-    if (t === "rules") loadRules();
-  }));
+  $$(".tab[data-tab]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  bindSidebar();
+  $("#searchFs").addEventListener("input", () => { clearTimeout(fsTimer); fsTimer = setTimeout(applyFsFilter, 150); });
+  $("#fsStatus").addEventListener("change", applyFsFilter);
+  $("#fsColFilters").addEventListener("change", () => { if (fsData) buildFsGrid(); });
+  $("#fsClear").addEventListener("click", () => {
+    $("#searchFs").value = ""; $("#fsStatus").value = "";
+    if (fsGrid) fsGrid.clearHeaderFilter();
+    applyFsFilter();
+  });
   $$("[data-upload]").forEach((inp) => inp.addEventListener("change", () => {
     if (inp.files[0]) uploadFile(inp.dataset.upload, inp.files[0]);
     inp.value = "";
@@ -471,6 +604,8 @@ function bind() {
       toast(`FS database loaded: ${r.count} items`);
       refreshState();
       loadTable("bc");
+      fsData = null;
+      if ($("#tab-fs").classList.contains("active")) loadFs();
     } catch (err) { toast("Failed: " + err.message, 6000); }
     e.target.value = "";
   });
@@ -493,4 +628,6 @@ function bind() {
   bind();
   await refreshState();
   await Promise.all([loadTable("bc"), loadTable("qb")]);
+  const last = localStorage.getItem("qbbc.tab");
+  if (last && last !== "bc" && $("#tab-" + last)) showTab(last);
 })();

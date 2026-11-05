@@ -116,6 +116,55 @@ def load_fs_database(xlsx_path: str | Path) -> dict:
     return {"source_file": Path(xlsx_path).name, "count": len(items), "items": items}
 
 
+def _display(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() else f"{v:.6g}"
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    return str(v).strip()
+
+
+def load_fs_sheet(xlsx_path: str | Path) -> dict:
+    """The whole ``Mixed Database`` sheet as displayed values, for browsing/search.
+
+    Formulas are read as their last calculated value (``data_only``). Columns with
+    no header and no data, and fully blank rows, are dropped.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+    if SHEET not in wb.sheetnames:
+        raise ValueError(f"Sheet '{SHEET}' not found. Sheets: {wb.sheetnames}")
+    rows_iter = wb[SHEET].iter_rows(values_only=True)
+    headers = [_display(h) for h in next(rows_iter, [])]
+    body = []
+    for excel_row, r in enumerate(rows_iter, start=2):
+        vals = [_display(v) for v in r]
+        if any(vals):
+            body.append([excel_row] + vals)
+    wb.close()
+    width = max([len(headers)] + [len(r) - 1 for r in body])
+    headers += [""] * (width - len(headers))
+    keep = [i for i in range(width)
+            if headers[i] or any(i + 1 < len(r) and r[i + 1] for r in body)]
+    columns = [headers[i] or f"Column {i + 1}" for i in keep]
+    rows = [[r[0]] + [r[i + 1] if i + 1 < len(r) else "" for i in keep] for r in body]
+    return {"columns": columns, "rows": rows}
+
+
+def sheet_from_reference(data: dict) -> dict:
+    """Fallback view built from the slim reference cache (before a re-upload)."""
+    cols = [("item_no", "TPC Number(Business central)"), ("tpc_no", "TPC Number"),
+            ("description", "Description"), ("item_type", "Item Type"), ("status", "Item status"),
+            ("cut_method", "Cut Method"), ("cut_size", "Cut Size/ Count"), ("other", "Other Descriptions"),
+            ("pack", "Pack Size"), ("total_lb", "Total lb"), ("rm1", "Related RM (1)"), ("rm1_code", "RM1 CODE")]
+    rows = []
+    for it in data.get("items", []):
+        codes = "; ".join(f"{c}: {v}" for c, v in it.get("codes", []))
+        rows.append([it.get("row", "")] + [_display(it.get(k)) for k, _ in cols] + [codes])
+    return {"columns": [t for _, t in cols] + ["Customer codes"], "rows": rows}
+
+
 class Reference:
     """In-memory index over the cached FS reference."""
 

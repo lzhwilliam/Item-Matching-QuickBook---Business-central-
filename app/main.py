@@ -14,11 +14,13 @@ from .gitsync import commit_message, commit_version
 from .io_excel import read_upload, to_csv, to_xlsx
 from .learning import diff_rows, learn_from_edits
 from .matcher import BC_COLUMNS, BC_META, QB_COLUMNS, analyze, generate, new_rid
-from .reference import Reference, load_fs_database, read_reference, save_reference
+from .reference import (Reference, load_fs_database, load_fs_sheet, read_reference, save_reference,
+                        sheet_from_reference)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("QBBC_DATA_DIR", ROOT / "data"))
 REF_PATH = DATA / "reference.json"
+SHEET_PATH = DATA / "fs_sheet.json"
 HISTORY_DIR = Path(os.environ.get("QBBC_HISTORY_DIR", ROOT / "table_history"))
 GIT_ENABLED = os.environ.get("QBBC_GIT_AUTOCOMMIT", "1") != "0"
 
@@ -146,7 +148,27 @@ async def upload_reference(file: UploadFile = File(...)):
     data["source_file"] = file.filename
     save_reference(data, REF_PATH)
     state["ref"] = Reference(data)
+    try:
+        sheet = load_fs_sheet(tmp)
+        sheet["source_file"] = file.filename
+        SHEET_PATH.write_text(json.dumps(sheet))
+    except Exception:  # noqa: BLE001 - the browse view is optional; matching data is already saved
+        SHEET_PATH.unlink(missing_ok=True)
     return {"loaded": True, "count": data["count"], "source_file": file.filename}
+
+
+@app.get("/api/reference/sheet")
+def reference_sheet():
+    """The full FS 'Mixed Database' sheet for the browse/search tab."""
+    if SHEET_PATH.exists():
+        return json.loads(SHEET_PATH.read_text())
+    r = ref()
+    if not r.loaded:
+        return {"columns": [], "rows": [], "source_file": None}
+    out = sheet_from_reference(r.data)
+    out["source_file"] = r.data.get("source_file")
+    out["partial"] = True
+    return out
 
 
 @app.get("/api/reference/search")
