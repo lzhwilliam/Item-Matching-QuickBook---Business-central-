@@ -16,7 +16,7 @@ import hashlib
 from .io_excel import is_xlsx, read_upload_rich, to_csv, to_xlsx
 from .learning import diff_meta, diff_rows, learn_from_edits
 from .xlsx_export import effective_layout, write_csv, write_xlsx
-from .matcher import BC_COLUMNS, BC_META, QB_COLUMNS, analyze, generate, new_rid
+from .matcher import BC_COLUMNS, BC_META, ERROR_PENALTY, QB_COLUMNS, analyze, generate, new_rid
 from .reference import (Reference, load_fs_database, load_fs_sheet, read_reference, save_reference,
                         sheet_from_reference)
 
@@ -73,11 +73,31 @@ def _payload(name: str, v: dict) -> dict:
     out = {"table": name, "version_no": v["version_no"], "created_at": v.get("created_at"),
            "source": v.get("source"), "note": v.get("note"), "columns": data["columns"], "rows": data["rows"]}
     if name == "bc":
-        out["analysis"] = analyze(data["rows"], _qb_rows(), ref())
+        out["analysis"] = _analysis(data["rows"])
     sheet = data.get("sheet") or {}
     out["layout"] = effective_layout(sheet, data["columns"], _skip(name))
     out["sheet"] = {"kind": sheet.get("kind"), "file_name": sheet.get("file_name"),
                     "col_widths": sheet.get("col_widths") or {}, "template": bool(_template_path(sheet))}
+    return out
+
+
+def _analysis(rows: list[dict]) -> list[dict]:
+    """analyze() plus the user's "Resolve": a resolved row's remembered problems are marked
+    resolved and no longer lower its confidence; any new or changed problem still counts."""
+    out = analyze(rows, _qb_rows(), ref())
+    for r, a in zip(rows, out):
+        res = r.get("_resolved")
+        if not res:
+            continue
+        keys = set(res.get("errors") or [])
+        penalty = 0
+        for e in a["errors"]:
+            if f'{e["col"]}|{e["msg"]}' in keys:
+                e["resolved"] = True
+            else:
+                penalty += ERROR_PENALTY[e["sev"]]
+        a["confidence"] = max(0, 100 - penalty)
+        a["resolved"] = True
     return out
 
 
@@ -323,7 +343,7 @@ def download_table(name: str, fmt: str = "xlsx", version: int | None = None):
         data = to_xlsx(BC_COLUMNS, rows, t["sheet"], bc_layout=True)
         fname = f"{base}_BC_import.xlsx"
     else:
-        analysis = analyze(rows, _qb_rows(), ref()) if name == "bc" else None
+        analysis = _analysis(rows) if name == "bc" else None
         data = to_xlsx(cols, rows, t["sheet"], analysis)
         fname = f"{base}.xlsx"
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -337,14 +357,22 @@ def _download_original(name: str, v: dict, base: str) -> Response:
     """The table in the layout/format of the file it was uploaded from (see app/xlsx_export.py)."""
     data = v["data"]
     sheet = data.get("sheet") or {}
-    stem = Path(sheet.get("file_name") or base).stem
+    default_stem = "Imperial_configuration_package" if name == "bc" else "Imperial_QB_item_list"
+    stem = Path(sheet.get("file_name") or default_stem).stem
     fname = f"{stem}_v{v['version_no']}"
     if sheet.get("kind") == "csv":
         return Response(write_csv(data, _skip(name)), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{fname}.csv"'})
     tpl = _template_path(sheet)
     macro = bool(tpl and tpl.suffix == ".xlsm")
-    out = write_xlsx(data, tpl.read_bytes() if tpl else None, _skip(name), TABLES[name]["sheet"], macro=macro)
+    template = tpl.read_bytes() if tpl else None
+    if template is None and name == "bc":
+        # never uploaded: start from the standard BC configuration-package layout (title rows, header row 3)
+        template = to_xlsx(BC_COLUMNS, [], TABLES["bc"]["sheet"], bc_layout=True)
+        data = dict(data, sheet={**sheet, "kind": "xlsx", "header_row": 3, "last_row": 3, "autosize": True,
+                                 "sheet_name": TABLES["bc"]["sheet"][:31], "max_col": len(BC_COLUMNS),
+                                 "col_pos": {c: i + 1 for i, c in enumerate(BC_COLUMNS)}})
+    out = write_xlsx(data, template, _skip(name), TABLES[name]["sheet"], macro=macro)
     ext, mime = (".xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12") if macro else (".xlsx", XLSX_MIME)
     return Response(out, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{fname}{ext}"'})
 

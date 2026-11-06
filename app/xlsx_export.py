@@ -16,20 +16,23 @@ from __future__ import annotations
 import csv
 import io
 import re
+import zipfile
 from collections import namedtuple
 from copy import copy
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 import openpyxl
 from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter, range_boundaries
+from openpyxl.workbook.properties import CalcProperties
 
 from .io_excel import formula_text, style_of
 
 NUM_RE = re.compile(r"-?\d+(\.\d+)?")
-Snap = namedtuple("Snap", "value style is_number is_date")
+Snap = namedtuple("Snap", "value style is_number is_date cached")
 
 
 def effective_layout(sheet: dict | None, columns: list[str], skip=()) -> dict:
@@ -55,9 +58,44 @@ def move_formula(f: str, col_letter: str, from_row: int, to_row: int) -> str:
         return f
 
 
-def _snap(cell) -> Snap:
+def _snap(cell, cached=None) -> Snap:
     v = cell.value
-    return Snap(v, copy(cell._style), isinstance(v, (int, float)) and not isinstance(v, bool), cell.is_date)
+    num = isinstance(v, (int, float)) and not isinstance(v, bool)
+    return Snap(v, copy(cell._style), num, cell.is_date, cached)
+
+
+NUMERIC = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?")
+
+
+def _cache_formula_values(xlsx: bytes, sheet_path: str, cached: dict) -> bytes:
+    """openpyxl writes formula cells with an empty <v/>. Fill in each formula's last
+    calculated value so programs that don't recalculate (e.g. Business Central's
+    import) still read the number; Excel/OneDrive recalculate on open anyway."""
+    if not cached or not sheet_path:
+        return xlsx
+    src = zipfile.ZipFile(io.BytesIO(xlsx))
+    try:
+        xml = src.read(sheet_path).decode("utf-8")
+    except KeyError:
+        return xlsx
+
+    def fill(m):
+        ref, attrs, f = m.group(1), m.group(2), m.group(3)
+        if ref not in cached:
+            return m.group(0)
+        v = str(cached[ref])
+        attrs = re.sub(r'\s+t="[^"]*"', "", attrs)
+        if NUMERIC.fullmatch(v.strip()):
+            return f'<c r="{ref}"{attrs}><f>{f}</f><v>{v.strip()}</v>'
+        return f'<c r="{ref}"{attrs} t="str"><f>{f}</f><v>{escape(v)}</v>'
+
+    xml = re.sub(r'<c r="([A-Z]+\d+)"([^>]*)><f>(.*?)</f><v\s*/>', fill, xml)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = xml.encode("utf-8") if item.filename == sheet_path else src.read(item.filename)
+            dst.writestr(item, data)
+    return out.getvalue()
 
 
 def _typed(v, snap: Snap | None, want: dict):
@@ -115,11 +153,14 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
     col_pos, hr = lay["col_pos"], lay["header_row"]
     orig_cols = sheet.get("col_pos") or {}
 
+    wsv = None
     if template:
         wb = openpyxl.load_workbook(io.BytesIO(template), keep_vba=macro)
         name = sheet.get("sheet_name")
         ws = wb[name] if name in wb.sheetnames else wb.worksheets[0]
         old_last = max(int(sheet.get("last_row") or hr), hr)
+        wbv = openpyxl.load_workbook(io.BytesIO(template), data_only=True)  # Excel's cached results
+        wsv = wbv[ws.title] if ws.title in wbv.sheetnames else None
     else:
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -142,8 +183,10 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
             h.font = Font(bold=True)
 
     # snapshot the template's data rows before they're overwritten
-    src = {r: {j: _snap(ws.cell(row=r, column=j)) for j in range(1, max_col + 1)}
+    src = {r: {j: _snap(ws.cell(row=r, column=j), wsv.cell(row=r, column=j).value if wsv else None)
+               for j in range(1, max_col + 1)}
            for r in range(hr + 1, old_last + 1)} if template else {}
+    cached = {}  # "E4" -> last calculated value of the formula written there
     fallback = old_last if old_last in src else None
 
     prev = None
@@ -165,6 +208,8 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
             f = formula_text(snap.value) if snap else None
             if f:
                 cell.value = move_formula(f, get_column_letter(j), own or style_r, out_r)
+                if own and snap.cached is not None:
+                    cached[cell.coordinate] = snap.cached
             else:
                 cell.value = snap.value if (own and snap) else None
             if snap:
@@ -182,6 +227,8 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
             want = styles.get(c)
             if formulas.get(c):
                 cell.value = move_formula(formulas[c], get_column_letter(j), fr, out_r)
+                if str(row.get(c, "") or "") != "":
+                    cached[cell.coordinate] = row.get(c)
             else:
                 cell.value = _typed(row.get(c), snap, want or {})
             if want is not None:  # key present = the platform owns this cell's format
@@ -207,15 +254,17 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
         letter = get_column_letter(j)
         if c in widths:
             ws.column_dimensions[letter].width = float(widths[c])
-        elif not template or c not in orig_cols:
+        elif not template or c not in orig_cols or sheet.get("autosize"):
             w = max([len(c)] + [len(str(r.get(c, ""))) for r in rows[:300]]) + 2
             ws.column_dimensions[letter].width = min(60, w)
     if not template:
         ws.freeze_panes = ws.cell(row=hr + 1, column=1)
+    if wb.calculation is None:  # e.g. files exported by Business Central have no <calcPr>
+        wb.calculation = CalcProperties()
     wb.calculation.fullCalcOnLoad = True  # Excel / OneDrive recalculate every formula on open
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    return _cache_formula_values(buf.getvalue(), ws.path.lstrip("/"), cached)
 
 
 def write_csv(data: dict, skip=()) -> bytes:

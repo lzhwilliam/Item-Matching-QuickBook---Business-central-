@@ -34,12 +34,20 @@ def test_field_override_and_token_rule(tmp_path):
     again, _ = gen(QB, ref, st, st.settings())
     assert again[tomato]["Cut Size and Method"] == "8 CUT WEDGE"  # field override
     assert not st.rules("token_rule")  # seen once only
-    # second time the same word change happens -> global token rule
+    # the same row fixed again is not a repeated pattern
     rows2 = copy.deepcopy(again)
     rows2[tomato]["Cut Size and Method"] = "8 CUT WEDGED"
     new2 = copy.deepcopy(rows2)
     new2[tomato]["Cut Size and Method"] = "8 CUT WEDGE"
     learn_from_edits(st, rows2, new2, QB, ref, st.settings(), 3)
+    assert not st.rules("token_rule")
+    # the same word change on a second, different row -> global token rule
+    celery = next(i for i, r in enumerate(rows) if r["Customer Item Code"] == "6523450")
+    rows3 = copy.deepcopy(new2)
+    rows3[celery]["Cut Size and Method"] = "1/4 WEDGED"
+    new3 = copy.deepcopy(rows3)
+    new3[celery]["Cut Size and Method"] = "1/4 WEDGE"
+    learn_from_edits(st, rows3, new3, QB, ref, st.settings(), 4)
     assert st.rules("token_rule")
 
 

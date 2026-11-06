@@ -70,6 +70,10 @@ def diff_meta(old_rows: list[dict], new_rows: list[dict]) -> list[dict]:
             if not _same_formula(fa.get(c, ""), o.get("_fr"), fb.get(c, ""), r.get("_fr")):
                 out.append({"rid": r["_rid"], "col": c, "kind": "formula",
                             "old": fa.get(c, "") or "(value)", "new": fb.get(c, "") or "(value)"})
+        if bool(o.get("_resolved")) != bool(r.get("_resolved")):
+            out.append({"rid": r["_rid"], "col": "(row)", "kind": "resolved",
+                        "old": "resolved" if o.get("_resolved") else "open",
+                        "new": "resolved" if r.get("_resolved") else "open"})
         sa, sb = o.get("_s") or {}, r.get("_s") or {}
         for c in sorted(set(sa) | set(sb)):
             if (sa.get(c) or {}) != (sb.get(c) or {}):

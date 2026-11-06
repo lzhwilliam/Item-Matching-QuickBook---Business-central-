@@ -57,17 +57,11 @@
       </select>
       <span class="sep"></span>
       <label class="btn">Upload<input type="file" accept=".xlsx,.csv" data-upload="bc" hidden></label>
-      <div class="dropdown">
-        <button>Download ▾</button>
-        <div class="menu">
-          <a data-dl="bc" data-fmt="original"><b>Original format</b> — as uploaded, with formulas &amp; formats</a>
-          <a data-dl="bc" data-fmt="bc">BC import layout (.xlsx)</a>
-          <a data-dl="bc" data-fmt="xlsx">Full with confidence &amp; errors (.xlsx)</a>
-          <a data-dl="bc" data-fmt="csv">CSV (BC columns)</a>
-        </div>
-      </div>
+      <button data-dl="bc" title="The BC configuration package in your uploaded file's layout, with your formulas and formats">Download Imperial configuration package</button>
       <button data-addrow="bc">+ Row</button>
       <button data-delrows="bc">Delete selected rows</button>
+      <button id="btnResolve" title="Mark the selected rows' current problems as resolved: their red shading and error messages go away. New problems still show.">✓ Resolve</button>
+      <button id="btnUnresolve" title="Show the selected rows' resolved problems again">Unresolve</button>
       <button data-history="bc">History</button>
       <span class="sep"></span>
       <label class="chk"><input type="checkbox" id="onlyIssues"> Only rows with issues</label>
@@ -91,14 +85,7 @@
   <section id="tab-qb" class="panel">
     <div class="toolbar">
       <label class="btn primary">Upload QuickBooks list<input type="file" accept=".xlsx,.csv" data-upload="qb" hidden></label>
-      <div class="dropdown">
-        <button>Download ▾</button>
-        <div class="menu">
-          <a data-dl="qb" data-fmt="original"><b>Original format</b> — as uploaded, with formulas &amp; formats</a>
-          <a data-dl="qb" data-fmt="xlsx">Excel (.xlsx)</a>
-          <a data-dl="qb" data-fmt="csv">CSV</a>
-        </div>
-      </div>
+      <button data-dl="qb" title="The QuickBooks item list in your uploaded file's layout, with your formulas and formats">Download Imperial QB item list</button>
       <button data-addrow="qb">+ Row</button>
       <button data-delrows="qb">Delete selected rows</button>
       <button data-history="qb">History</button>
@@ -117,7 +104,7 @@
       <label class="chk"><input type="checkbox" id="fsColFilters"> Column filters</label>
       <select id="fsStatus" title="Item status"><option value="">All statuses</option></select>
       <button id="fsClear">Clear</button>
-      <a class="btn" href="/api/reference/original" title="The FS database workbook exactly as uploaded">Download original file</a>
+      <a class="btn" href="/api/reference/original" title="The FS database workbook exactly as uploaded">Download FS database</a>
       <span class="grow"></span>
       <span id="fsCount" class="save-state"></span>
     </div>

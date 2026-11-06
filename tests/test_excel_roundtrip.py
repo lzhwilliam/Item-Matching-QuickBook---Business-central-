@@ -134,10 +134,86 @@ def test_original_download_without_upload_and_existing_formats_still_work(client
     client.post("/api/table/bc/save", json={"rows": g["rows"], "columns": g["columns"]})
     x = client.get("/api/table/bc/download", params={"fmt": "original"})
     ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
-    header = [c.value for c in ws[1]]
+    header = [c.value for c in ws[3]]  # BC configuration-package layout: header on row 3
     assert "Item No." in header and "Match Score" not in header  # platform-only columns stay out
     j = header.index("Item No.") + 1
-    assert ws.cell(row=2, column=j).font.b
-    assert ws.cell(row=2, column=header.index("No. of copy") + 1).value == "=1+1"
+    assert ws.cell(row=4, column=j).font.b
+    assert ws.cell(row=4, column=header.index("No. of copy") + 1).value == "=1+1"
     for fmt in ("bc", "xlsx", "csv"):  # the existing downloads are unchanged
         assert client.get("/api/table/bc/download", params={"fmt": fmt}).status_code == 200
+
+
+def _without_calc_settings(xlsx: bytes) -> bytes:
+    """Like files exported by Business Central: no <calcPr> in workbook.xml."""
+    import re
+    import zipfile
+    src = zipfile.ZipFile(io.BytesIO(xlsx))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/workbook.xml":
+                data = re.sub(rb"<calcPr[^>]*/>", b"", data)
+                assert b"calcPr" not in data
+            dst.writestr(item, data)
+    return out.getvalue()
+
+
+def test_template_without_calc_settings_and_formula_values_are_kept(client):
+    content = _without_calc_settings(qb_workbook())
+    assert openpyxl.load_workbook(io.BytesIO(content)).calculation is None
+    p = client.post("/api/table/qb/upload", files={"file": ("bc export.xlsx", content, XLSX)}).json()
+    rows = p["rows"]
+    rows[0]["Double"] = "40"  # what the browser calculated for =D4*2
+    client.post("/api/table/qb/save", json={"rows": rows, "columns": p["columns"]})
+    x = client.get("/api/table/qb/download", params={"fmt": "original"})
+    assert x.status_code == 200, x.text
+    wb = openpyxl.load_workbook(io.BytesIO(x.content))
+    assert wb.calculation.fullCalcOnLoad and wb["Items"]["E4"].value == "=D4*2"
+    cached = openpyxl.load_workbook(io.BytesIO(x.content), data_only=True)["Items"]
+    assert cached["E4"].value == 40  # readers that don't recalculate (e.g. BC import) still see the number
+
+
+def test_bc_never_uploaded_downloads_in_bc_layout(client):
+    qb = ("Item,Description,Customer Item No,Case Weight,GTIN,Raw Material\n"
+          "Sales IM:0010967,Onion Yellow Diced 3/8in 4/5lb,0010967,20,10074865916063,Onion Yellow\n").encode()
+    client.post("/api/table/qb/upload", files={"file": ("qb.csv", qb, "text/csv")})
+    client.post("/api/generate", json={"mode": "replace"})
+    x = client.get("/api/table/bc/download", params={"fmt": "original"})
+    assert 'filename="Imperial_configuration_package_v1.xlsx"' in x.headers["content-disposition"]
+    ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
+    assert [ws.cell(row=1, column=j).value for j in (1, 2, 3)] == ["IMPERIAL LABEL", "Imperial Item Label Master", "50024"]
+    assert ws.cell(row=3, column=1).value == "Entry No." and ws.cell(row=4, column=7).value == "0010967"
+    assert "Match Score" not in [c.value for c in ws[3]]
+
+
+def test_resolved_rows_hide_known_problems_but_show_new_ones(client):
+    qb = ("Item,Description,Customer Item No,Case Weight,GTIN,Raw Material\n"
+          "Sales IM:0010967,Onion Yellow Diced 3/8in 4/5lb,0010967,99,10074865916063,Onion Yellow\n").encode()
+    client.post("/api/table/qb/upload", files={"file": ("qb.csv", qb, "text/csv")})
+    g = client.post("/api/generate", json={"mode": "replace"}).json()
+    a = g["analysis"][0]
+    assert a["errors"] and a["confidence"] < 100  # case weight 99 disagrees with the pack
+    rows = g["rows"]
+    rows[0]["_resolved"] = {"errors": [f'{e["col"]}|{e["msg"]}' for e in a["errors"]], "at": "2026-11-05"}
+    s = client.post("/api/table/bc/save", json={"rows": rows, "columns": g["columns"]}).json()
+    a = s["analysis"][0]
+    assert a["resolved"] and a["confidence"] == 100 and all(e["resolved"] for e in a["errors"])
+    d = client.get("/api/table/bc/diff", params={"version": s["version_no"]}).json()
+    assert any(c["col"] == "(row) (resolved)" for c in d["changed"])
+    rows = s["rows"]
+    rows[0]["GTIN"] = "123"  # a new problem after resolving
+    a = client.post("/api/table/bc/save", json={"rows": rows, "columns": g["columns"]}).json()["analysis"][0]
+    new = [e for e in a["errors"] if not e.get("resolved")]
+    assert new and any(e["col"] == "GTIN" for e in new) and a["confidence"] < 100
+
+
+def test_word_pattern_needs_two_different_rows(tmp_path):
+    from app.db import Store
+    st = Store(tmp_path / "t.db")
+    pat = "Item Description::(2/5LB)=>(1/5lb)"
+    st.log_edit("bc", 1, "9145764", "Item Description", "a", "b", pat)
+    st.log_edit("bc", 2, "9145764", "Item Description", "a", "b", pat)  # same row fixed twice
+    assert st.pattern_count(pat) == 1
+    st.log_edit("bc", 3, "7156947", "Item Description", "a", "b", pat)
+    assert st.pattern_count(pat) == 2

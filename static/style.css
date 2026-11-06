@@ -87,11 +87,21 @@ input[type=search].wide { width: 340px; }
 .fbar .fx { padding: 4px 8px; font-style: italic; font-family: Georgia, serif; color: var(--muted); border-right: 1px solid var(--line); }
 .fbar .fx-input { flex: 1; min-width: 0; border: 0; padding: 4px 8px; font: 12.5px/1.4 ui-monospace, Consolas, monospace; outline: none; }
 .fbar:focus-within { border-color: var(--accent); }
+.tabulator .tabulator-row .tabulator-cell { position: relative; }
+/* copy / cut marquee ("marching ants"), like Excel */
+.ants { position: absolute; pointer-events: none; z-index: 3; }
+.ants-t, .ants-b { left: 0; right: 0; height: 2px; background: repeating-linear-gradient(90deg, #217346 0 5px, transparent 5px 9px); background-size: 9px 2px; animation: ants-h .5s linear infinite; }
+.ants-l, .ants-r { top: 0; bottom: 0; width: 2px; background: repeating-linear-gradient(180deg, #217346 0 5px, transparent 5px 9px); background-size: 2px 9px; animation: ants-v .5s linear infinite; }
+.ants-t { top: 0; } .ants-b { bottom: 0; } .ants-l { left: 0; } .ants-r { right: 0; }
+@keyframes ants-h { to { background-position: 9px 0; } }
+@keyframes ants-v { to { background-position: 0 9px; } }
 .tabulator .tabulator-cell.cell-fx { position: relative; }
 .tabulator .tabulator-cell.cell-fx::after { content: ""; position: absolute; top: 0; right: 0; border-left: 6px solid transparent; border-top: 6px solid #2e7d32; }
 .tabulator .tabulator-cell .cell-edit { width: 100%; height: 100%; padding: 4px; border: 1px solid var(--accent); font: inherit; box-sizing: border-box; }
 .tabulator-row.tabulator-selected .tabulator-cell { background: transparent; }
 .conf-pill { font-weight: 600; }
+.resolved-tick { color: #2e7d32; font-weight: 700; }
+.resolved-text { color: var(--muted); text-decoration: line-through; }
 .err-text { color: var(--err); } .warn-text { color: #a86400; }
 .detail { margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #fbfcfe; }
 .detail.hidden { display: none; }

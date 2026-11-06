@@ -59,8 +59,9 @@ function decorate(rows, analysis) {
     const out = { ...r };
     if (a) {
       out._conf = a.confidence;
-      out._errs = a.errors;
-      out._errtext = a.errors.map((e) => `${e.sev === "error" ? "⛔" : "⚠"} ${e.msg}`).join("  ·  ");
+      out._errs = a.errors.filter((e) => !e.resolved); // resolved problems no longer shade or outline the row
+      out._doneErrs = a.errors.filter((e) => e.resolved);
+      out._errtext = out._errs.map((e) => `${e.sev === "error" ? "⛔" : "⚠"} ${e.msg}`).join("  ·  ");
     }
     return out;
   });
@@ -75,7 +76,7 @@ function cellFormatter(cell) {
   const d = cell.getRow().getData();
   const st = d._s?.[field];
   paintCell(el, st, d._f?.[field]);
-  return esc(formatNumber(cell.getValue(), st?.numFmt));
+  return esc(formatNumber(cell.getValue(), st?.numFmt)) + copyMarkHtml(TABLES.bc.grid === cell.getTable() ? "bc" : "qb", d._rid, field);
 }
 
 function cellTooltip(e, cell) {
@@ -93,7 +94,8 @@ function buildColumns(name, columns) {
   if (name === "bc") {
     cols.push({
       title: "Conf.", field: "_conf", width: 64, editor: false, hozAlign: "center", sorter: "number",
-      formatter: (c) => (c.getValue() == null ? "" : `<span class="conf-pill">${c.getValue()}%</span>`),
+      formatter: (c) => (c.getValue() == null ? "" : `<span class="conf-pill">${c.getValue()}%</span>`)
+        + (c.getRow().getData()._resolved ? ' <span class="resolved-tick" title="Resolved">✓</span>' : ""),
     });
   }
   for (const c of columns) {
@@ -138,17 +140,12 @@ function makeGrid(name, payload) {
     height: "100%",
     reactiveData: false,
     history: false, // undo/redo is the platform's own stack (covers formats, formulas and server actions)
-    selectableRange: 1,
+    selectableRange: true, // Ctrl+click / Ctrl+drag adds another selection, Shift+click extends
     selectableRangeColumns: true,
     selectableRangeRows: true,
     selectableRangeClearCells: true,
     editTriggerEvent: "dblclick",
-    clipboard: true,
-    clipboardCopyStyled: false,
-    clipboardCopyConfig: { rowHeaders: false, columnHeaders: false },
-    clipboardCopyRowRange: "range",
-    clipboardPasteParser: "range",
-    clipboardPasteAction: "range",
+    clipboard: false, // copy / cut / paste are handled Excel-style in bindExcel()
     rowHeader: { resizable: false, frozen: true, width: 44, hozAlign: "center", formatter: "rownum", headerSort: false, editor: false },
     columnDefaults: { headerSort: true, resizable: "header", headerHozAlign: "left" },
     rowFormatter: (row) => {
@@ -160,7 +157,6 @@ function makeGrid(name, payload) {
   T.grid.on("dataChanged", () => onUserChange(name));
   T.grid.on("rowDeleted", () => onUserChange(name, "Delete row"));
   T.grid.on("rowAdded", () => onUserChange(name, "Add row"));
-  T.grid.on("clipboardPasted", () => { T.nextLabel = "Paste"; });
   T.grid.on("columnResized", (col) => {
     if (T.suppress) return;
     T.widths[col.getField()] = Math.round(((col.getWidth() - 5) / 7) * 100) / 100;
@@ -169,6 +165,7 @@ function makeGrid(name, payload) {
   T.grid.on("cellClick", (e, cell) => refreshBar(name, cell));
   T.grid.on("rangeChanged", (range) => { const c = [range.getCells() || []].flat(2)[0]; if (c) refreshBar(name, c); });
   if (name === "bc") T.grid.on("cellClick", (e, cell) => showDetail(cell.getRow()));
+  bindExcel(name);
   T.grid.on("tableBuilt", () => {
     applyFilters(name);
     recalc(name).forEach((d) => T.grid.getRow(d._rid)?.reformat());
@@ -189,7 +186,7 @@ function setVersion(name, p) {
 }
 
 function updateBadge(analysis) {
-  const n = analysis.filter((a) => a.errors.some((e) => e.sev === "error")).length;
+  const n = analysis.filter((a) => a.errors.some((e) => e.sev === "error" && !e.resolved)).length;
   $("#badgeBc").textContent = n ? String(n) : "";
   $("#badgeBc").title = `${n} rows with errors`;
 }
@@ -275,6 +272,7 @@ async function showDetail(row) {
   const box = $("#detail");
   box.classList.remove("hidden");
   const errs = (d._errs || []).map((e) => `<li class="${e.sev === "error" ? "err-text" : "warn-text"}">${esc(e.col)}: ${esc(e.msg)}</li>`).join("") || "<li>None</li>";
+  const done = (d._doneErrs || []).map((e) => `<li class="resolved-text">${esc(e.col)}: ${esc(e.msg)}</li>`).join("");
   box.innerHTML = `
     <div class="cols">
       <div>
@@ -285,6 +283,7 @@ async function showDetail(row) {
           <tr><th>How matched</th><td>${esc(d["Match Method"])} (score ${esc(d["Match Score"])})</td></tr>
         </table>
         <b>Issues</b><ul>${errs}</ul>
+        ${done ? `<b>Resolved</b> <span class="hint">(${esc(d._resolved?.at || "")})</span><ul>${done}</ul>` : ""}
       </div>
       <div>
         <b>Pick a different FS item</b> <span class="hint">(choosing one sets Item No., refills the fields and teaches the matcher)</span>
@@ -312,7 +311,37 @@ async function showDetail(row) {
 // Row fields kept with the data:  _f {column: "=formula"} anchored at Excel row _fr,
 // _s {column: {b,i,u,color,fill,numFmt,align,wrap}} (key present = the platform owns that cell's format),
 // _row = the row in the uploaded file. Cell addresses follow the uploaded sheet (T.layout).
-const ROW_META = ["_rid", "_f", "_fr", "_s", "_row"];
+const ROW_META = ["_rid", "_f", "_fr", "_s", "_row", "_resolved"];
+
+/** Resolve (on=true) or Unresolve the selected rows. A resolved row remembers its current
+ *  problems; the server stops counting those, and anything new still shows. */
+function resolveSelected(name, on) {
+  const T = TABLES[name];
+  const rows = new Set();
+  rangeParts(name).forEach((p) => p.rows.forEach((r) => rows.add(r)));
+  (T.grid.getRanges ? T.grid.getRanges() : []).forEach((r) => r.getRows().forEach((row) => rows.add(row)));
+  if (!rows.size) { toast("Select the rows first: click or drag the row numbers (Shift+click for a block, Ctrl+click to add more)."); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  let n = 0;
+  rows.forEach((row) => {
+    const d = row.getData();
+    if (on) {
+      const all = [...(d._errs || []), ...(d._doneErrs || [])];
+      if (!all.length && !(d._conf != null && d._conf < 100)) return;
+      d._resolved = { errors: all.map((e) => `${e.col}|${e.msg}`), at: today };
+      d._doneErrs = all; d._errs = []; d._errtext = ""; d._conf = 100;
+    } else {
+      if (!d._resolved) return;
+      delete d._resolved;
+      d._errs = [...(d._errs || []), ...(d._doneErrs || [])]; d._doneErrs = [];
+    }
+    row.reformat();
+    n++;
+  });
+  if (!n) { toast(on ? "Nothing to resolve in the selected rows." : "None of the selected rows are resolved."); return; }
+  onUserChange(name, `${on ? "Resolve" : "Unresolve"} ${n} row${n === 1 ? "" : "s"}`);
+  toast(`${on ? "Resolved" : "Unresolved"} ${n} row${n === 1 ? "" : "s"}.`, 2500);
+}
 const UNDO_LIMIT = 100;
 
 const colLetter = (n) => { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
@@ -450,24 +479,6 @@ function paintCell(el, st, hasFormula) {
   el.style.textAlign = st?.align || "";
   el.style.whiteSpace = st?.wrap ? "normal" : "";
   el.classList.toggle("cell-fx", !!hasFormula);
-}
-
-/** In-cell editor that shows the formula (not its result) for formula cells. */
-function cellEditor(cell, onRendered, success, cancel) {
-  const d = cell.getRow().getData();
-  const input = document.createElement("input");
-  input.type = "text";
-  input.className = "cell-edit";
-  input.value = d._f?.[cell.getField()] ?? (cell.getValue() ?? "");
-  onRendered(() => { input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); });
-  let done = false;
-  const ok = () => { if (!done) { done = true; success(input.value); } };
-  input.addEventListener("blur", ok);
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === "Tab") ok();
-    else if (e.key === "Escape") { done = true; cancel(); }
-  });
-  return input;
 }
 
 // ---- undo / redo (one stack per table; server actions undo via History restore)
@@ -776,6 +787,313 @@ function bindSheetKeys() {
   }, true);
 }
 
+// ---------------------------------------------------------------- Excel behaviour: clipboard, copy marquee, keyboard
+// The grid's own clipboard is off (it pasted Excel's trailing line break as an empty row);
+// copy / cut / paste go through the browser's clipboard events here.
+let CLIP = null;      // what we last put on the clipboard: {name, text, cells[r][c] = {v, f, addr, s}, cut, src}
+let COPYMARK = null;  // the "marching ants" around the copied cells: {name, rids:Set, fields:[], top, bottom}
+
+const tableOf = (cell) => Object.keys(TABLES).find((n) => TABLES[n].grid && TABLES[n].grid === cell.getTable());
+const isEditing = (T) => !!(T.grid && T.grid.modules.edit && T.grid.modules.edit.currentCell);
+const editableField = (T, f) => {
+  const col = f && T.grid.getColumn(f);
+  return !!(col && !f.startsWith("_") && col.getDefinition().editor);
+};
+
+function activeRangeComp(T) {
+  const ranges = T.grid.getRanges ? T.grid.getRanges() : [];
+  const act = T.grid.modules.selectRange?.activeRange;
+  return ranges.find((r) => r._range === act) || ranges[ranges.length - 1] || null;
+}
+
+function rangeBlock(T, rc) {
+  const fields = rc.getColumns().map((c) => c.getField()).filter((f) => f && !f.startsWith("_"));
+  return { rows: rc.getRows(), fields };
+}
+
+function tsvCell(v) {
+  const s = v == null ? "" : String(v);
+  return /[\t\n\r"]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** Excel clipboard text -> rows of cells. Handles CRLF, the trailing line break and quoted cells. */
+function parseTSV(text) {
+  text = String(text).replace(/\r\n?/g, "\n");
+  if (text.endsWith("\n")) text = text.slice(0, -1);
+  const rows = [];
+  let row = [], field = "", q = false, start = true;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else q = false;
+      } else field += ch;
+      continue;
+    }
+    if (start && ch === '"' && text.indexOf('"', i + 1) > -1) { q = true; start = false; continue; }
+    if (ch === "\t") { row.push(field); field = ""; start = true; continue; }
+    if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; start = true; continue; }
+    field += ch;
+    start = false;
+  }
+  row.push(field);
+  rows.push(row);
+  return rows;
+}
+
+function setCopyMark(mark) {
+  const old = COPYMARK;
+  COPYMARK = mark;
+  for (const m of [old, mark]) {
+    if (!m || !TABLES[m.name].grid) continue;
+    m.rids.forEach((rid) => TABLES[m.name].grid.getRow(rid)?.reformat());
+  }
+}
+const clearCopyMark = () => { if (COPYMARK) setCopyMark(null); };
+
+/** Edge spans for the copy marquee, added to a cell's formatted HTML. */
+function copyMarkHtml(name, rid, field) {
+  const m = COPYMARK;
+  if (!m || m.name !== name || !m.rids.has(rid)) return "";
+  const i = m.fields.indexOf(field);
+  if (i < 0) return "";
+  let s = "";
+  if (rid === m.top) s += '<span class="ants ants-t"></span>';
+  if (rid === m.bottom) s += '<span class="ants ants-b"></span>';
+  if (i === 0) s += '<span class="ants ants-l"></span>';
+  if (i === m.fields.length - 1) s += '<span class="ants ants-r"></span>';
+  return s;
+}
+
+function onCopy(name, e, cut) {
+  const T = TABLES[name];
+  if (isEditing(T) || (e.target && e.target.closest && e.target.closest("input, textarea, select"))) return;
+  const rc = activeRangeComp(T);
+  if (!rc) return;
+  const { rows, fields } = rangeBlock(T, rc);
+  if (!rows.length || !fields.length) return;
+  e.preventDefault();
+  const cells = rows.map((row) => {
+    const d = row.getData();
+    const addr = addrRow(name, d._rid);
+    return fields.map((f) => ({
+      v: d[f] ?? "",
+      f: d._f?.[f] ? shiftFormula(d._f[f], addr - (d._fr || addr)) : null,
+      addr,
+      s: d._s && d._s[f] !== undefined ? clone(d._s[f]) : undefined,
+    }));
+  });
+  const text = cells.map((r) => r.map((c) => tsvCell(c.v)).join("\t")).join("\r\n") + "\r\n";
+  e.clipboardData.setData("text/plain", text);
+  const rids = rows.map((r) => r.getData()._rid);
+  CLIP = { name, text, cells, cut, src: { rids, fields } };
+  setCopyMark({ name, rids: new Set(rids), fields, top: rids[0], bottom: rids[rids.length - 1] });
+  const n = rows.length * fields.length;
+  toast(`${cut ? "Cut" : "Copied"} ${n} cell${n === 1 ? "" : "s"}${rows.length > 1 && fields.length > 1 ? ` (${rows.length} rows × ${fields.length} columns)` : ""} — Ctrl+V to paste, Esc to clear`, 2500);
+}
+
+async function onPaste(name, e) {
+  const T = TABLES[name];
+  if (isEditing(T) || (e.target && e.target.closest && e.target.closest("input, textarea, select"))) return;
+  e.preventDefault();
+  const text = e.clipboardData.getData("text/plain");
+  if (!text) return;
+  await pasteText(name, text);
+}
+
+async function pasteText(name, text) {
+  const T = TABLES[name];
+  const rc = activeRangeComp(T);
+  if (!rc) { toast("Click the cell to paste into first."); return; }
+  const block = parseTSV(text);
+  const internal = CLIP && CLIP.text.replace(/\r\n?/g, "\n") === String(text).replace(/\r\n?/g, "\n") ? CLIP : null;
+  const sel = rangeBlock(T, rc);
+  const viewCols = T.grid.getColumns().filter((c) => c.isVisible() && c.getField() && !c.getField().startsWith("_"))
+    .map((c) => c.getField());
+  const H = block.length, W = Math.max(...block.map((r) => r.length));
+  let targets; // [[row, field, srcRowIdx, srcColIdx]]
+  if (H === 1 && W === 1 && (sel.rows.length > 1 || sel.fields.length > 1)) {
+    targets = sel.rows.flatMap((row) => sel.fields.map((f) => [row, f, 0, 0])); // one value fills the selection
+  } else {
+    let view = T.grid.getRows("active");
+    const r0 = Math.max(0, view.indexOf(sel.rows[0]));
+    const c0 = Math.max(0, viewCols.indexOf(sel.fields[0]));
+    const need = r0 + H - view.length;
+    if (need > 0) { // the block runs past the last row: add rows, like typing below the data in Excel
+      T.suppress++;
+      try {
+        for (let k = 0; k < need; k++) await T.grid.addRow(blankRow(name), false);
+      } finally { T.suppress--; }
+      view = T.grid.getRows("active");
+    }
+    const fields = viewCols.slice(c0, c0 + W);
+    if (fields.length < W) toast(`${W - fields.length} pasted column(s) didn't fit and were left out.`, 4000);
+    targets = [];
+    view.slice(r0, r0 + H).forEach((row, i) => fields.forEach((f, j) => targets.push([row, f, i, j])));
+  }
+  const touched = new Set();
+  let skipped = 0;
+  for (const [row, f, i, j] of targets) {
+    if (!editableField(T, f)) { skipped++; continue; }
+    const d = row.getData();
+    const src = internal ? internal.cells[i % internal.cells.length][j % internal.cells[0].length] : null;
+    const raw = block[i % H][j % (block[i % H].length || 1)] ?? "";
+    if (src && src.f) {
+      setFormula(name, d, f, shiftFormula(src.f, addrRow(name, d._rid) - src.addr));
+      d[f] = src.v;
+    } else {
+      dropFormula(d, f);
+      d[f] = src ? src.v : raw;
+    }
+    if (src) { // pasting from inside the platform also brings the format, like Excel
+      if (src.s !== undefined) { d._s = d._s || {}; d._s[f] = clone(src.s); }
+      else if (d._s) delete d._s[f];
+    }
+    touched.add(row);
+  }
+  if (internal && internal.cut && internal.name === name) { // cut: clear the source cells that weren't pasted over
+    const pasted = new Set(targets.map(([row, f]) => row.getData()._rid + "\u0001" + f));
+    for (const rid of internal.src.rids) {
+      const row = T.grid.getRow(rid);
+      if (!row) continue;
+      const d = row.getData();
+      for (const f of internal.src.fields) {
+        if (pasted.has(rid + "\u0001" + f) || !editableField(T, f)) continue;
+        dropFormula(d, f);
+        d[f] = "";
+        if (d._s) delete d._s[f];
+        touched.add(row);
+      }
+    }
+    CLIP = null;
+    clearCopyMark();
+  }
+  touched.forEach((row) => row.reformat());
+  if (skipped) toast(`${skipped} read-only cell(s) were skipped.`, 3000);
+  if (touched.size) onUserChange(name, `Paste (${targets.length - skipped} cells)`);
+}
+
+function blankRow(name) {
+  const T = TABLES[name];
+  const blank = Object.fromEntries(T.columns.map((c) => [c, ""]));
+  blank._rid = Math.random().toString(16).slice(2, 12);
+  if (name === "bc") {
+    const nums = T.grid.getData().map((r) => parseInt(r["Entry No."], 10)).filter((n) => !isNaN(n));
+    blank["Entry No."] = String((nums.length ? Math.max(...nums) : 0) + 1);
+    blank["Match Score"] = 100;
+    blank["Match Method"] = "Manual row";
+  }
+  return blank;
+}
+
+// ---- keyboard: type to replace, F2 to edit, Enter/Tab move, Esc clears the copy marquee
+function moveActive(name, dir) {
+  const T = TABLES[name];
+  const sr = T.grid.modules.selectRange;
+  if (!sr) return;
+  setTimeout(() => { // after the editor has fully closed
+    try { sr.navigate(false, false, dir); } catch (_) { /* edge of the table */ }
+    sr.restoreFocus();
+    const c = sr.getActiveCell && sr.getActiveCell();
+    if (c) refreshBar(name, c.getComponent());
+  }, 0);
+}
+
+function startEdit(name, init) {
+  const T = TABLES[name];
+  const sr = T.grid.modules.selectRange;
+  const c = sr && sr.activeRange && sr.getActiveCell();
+  if (!c) return false;
+  const comp = c.getComponent();
+  if (!editableField(T, comp.getField())) return false;
+  T.editInit = init;
+  comp.edit(true);
+  return true;
+}
+
+function fillSelection(name, text) {
+  const T = TABLES[name];
+  const parts = rangeParts(name);
+  let n = 0;
+  for (const p of parts) for (const row of p.rows) for (const f of p.fields) {
+    if (!editableField(T, f)) continue;
+    const d = row.getData();
+    if (isFormula(text)) setFormula(name, d, f, shiftFormula(text, 0)); else dropFormula(d, f);
+    d[f] = text;
+    row.reformat();
+    n++;
+  }
+  if (n) onUserChange(name, `Fill ${n} cells`);
+}
+
+function onGridKeyDown(name, e) {
+  const T = TABLES[name];
+  if (!T.grid || isEditing(T) || e.altKey) return;
+  if (e.target && e.target.closest && e.target.closest("input, textarea, select")) return;
+  const k = e.key;
+  const stop = () => { e.preventDefault(); e.stopPropagation(); };
+  if (k === "Escape") { if (COPYMARK) { clearCopyMark(); CLIP = CLIP && { ...CLIP, cut: false }; } return; }
+  if (e.ctrlKey || e.metaKey) return; // Ctrl shortcuts are handled elsewhere (copy/paste events, undo, formats)
+  if (k === "Enter") { stop(); moveActive(name, e.shiftKey ? "up" : "down"); return; }
+  if (k === "Tab") { stop(); moveActive(name, e.shiftKey ? "left" : "right"); return; }
+  if (k === "F2") { stop(); startEdit(name, { mode: "edit" }); return; }
+  if (k === "Backspace") { stop(); startEdit(name, { mode: "enter", value: "" }); return; }
+  if (k.length === 1) { // a printable character: replace the cell's content, like Excel
+    if (startEdit(name, { mode: "enter", value: k })) stop();
+  }
+}
+
+/** In-cell editor. Typing on a cell ("enter" mode) replaces it and arrow keys commit + move;
+ *  F2 / double-click ("edit" mode) keeps the content and arrow keys move the caret. */
+function cellEditor(cell, onRendered, success, cancel) {
+  const name = tableOf(cell);
+  const T = TABLES[name];
+  const init = (T && T.editInit) || { mode: "edit" };
+  if (T) T.editInit = null;
+  let mode = init.mode;
+  const d = cell.getRow().getData();
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "cell-edit";
+  input.value = init.value !== undefined ? init.value : (d._f?.[cell.getField()] ?? (cell.getValue() ?? ""));
+  onRendered(() => { input.focus({ preventScroll: true }); input.setSelectionRange(input.value.length, input.value.length); });
+  let done = false;
+  const ok = () => { if (!done) { done = true; clearCopyMark(); success(input.value); } };
+  const go = (dir) => { ok(); if (name) moveActive(name, dir); };
+  input.addEventListener("blur", ok);
+  input.addEventListener("keydown", (e) => {
+    const k = e.key;
+    if (k === "Enter" && (e.ctrlKey || e.metaKey)) { // Ctrl+Enter: same value into every selected cell
+      e.preventDefault(); e.stopPropagation();
+      done = true; cancel();
+      if (name) fillSelection(name, input.value);
+      return;
+    }
+    if (k === "Enter") { e.preventDefault(); e.stopPropagation(); go(e.shiftKey ? "up" : "down"); return; }
+    if (k === "Tab") { e.preventDefault(); e.stopPropagation(); go(e.shiftKey ? "left" : "right"); return; }
+    if (k === "Escape") { e.preventDefault(); e.stopPropagation(); done = true; cancel(); if (name) TABLES[name].grid.modules.selectRange?.restoreFocus(); return; }
+    if (k === "F2") { e.preventDefault(); mode = mode === "enter" ? "edit" : "enter"; return; }
+    if (mode === "enter" && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(k)) {
+      e.preventDefault(); e.stopPropagation();
+      go(k.slice(5).toLowerCase());
+      return;
+    }
+    e.stopPropagation(); // keep the grid's own shortcuts out of the text box
+  });
+  return input;
+}
+
+function bindExcel(name) {
+  const T = TABLES[name];
+  const el = T.grid.element;
+  if (el.dataset.excelBound) return;
+  el.dataset.excelBound = "1";
+  el.addEventListener("copy", (e) => onCopy(name, e, false));
+  el.addEventListener("cut", (e) => onCopy(name, e, true));
+  el.addEventListener("paste", (e) => { onPaste(name, e); });
+  el.addEventListener("keydown", (e) => onGridKeyDown(name, e), true);
+}
+
 // ---------------------------------------------------------------- toolbar actions
 async function uploadFile(name, file) {
   const fd = new FormData();
@@ -795,15 +1113,7 @@ async function uploadFile(name, file) {
 
 function addRow(name) {
   const T = TABLES[name];
-  const blank = Object.fromEntries(T.columns.map((c) => [c, ""]));
-  blank._rid = Math.random().toString(16).slice(2, 12);
-  if (name === "bc") {
-    const nums = T.grid.getData().map((r) => parseInt(r["Entry No."], 10)).filter((n) => !isNaN(n));
-    blank["Entry No."] = String((nums.length ? Math.max(...nums) : 0) + 1);
-    blank["Match Score"] = 100;
-    blank["Match Method"] = "Manual row";
-  }
-  T.grid.addRow(blank, false).then((row) => T.grid.scrollToRow(row, "center", false));
+  T.grid.addRow(blankRow(name), false).then((row) => T.grid.scrollToRow(row, "center", false));
 }
 
 /** In-page replacement for window.confirm(): native popups are blocked in some
@@ -884,8 +1194,7 @@ async function openHistory(name) {
       <div class="acts">
         <button data-vdiff="${v.version_no}">Changes</button>
         ${i === 0 ? "" : `<button data-vrestore="${v.version_no}">Restore</button>`}
-        <a class="btn" href="/api/table/${name}/download?fmt=original&version=${v.version_no}" title="As uploaded, with formulas &amp; formats">Download</a>
-        <a class="btn" href="/api/table/${name}/download?fmt=xlsx&version=${v.version_no}" title="Platform layout (.xlsx)">Platform .xlsx</a>
+        <a class="btn" href="/api/table/${name}/download?fmt=original&version=${v.version_no}" title="This version, in your uploaded file's layout with formulas &amp; formats">Download</a>
       </div>
     </div>`).join("") : "<p>No versions yet.</p>";
   $$("[data-vdiff]").forEach((b) => b.addEventListener("click", () => showDiff(+b.dataset.vdiff)));
@@ -1124,14 +1433,17 @@ function bind() {
     if (inp.files[0]) uploadFile(inp.dataset.upload, inp.files[0]);
     inp.value = "";
   }));
-  $$("[data-dl]").forEach((a) => a.addEventListener("click", () => {
-    window.location.href = `/api/table/${a.dataset.dl}/download?fmt=${a.dataset.fmt}`;
+  $$("[data-dl]").forEach((a) => a.addEventListener("click", async () => {
+    await flushSave(a.dataset.dl); // download what's on screen, including the last edit
+    window.location.href = `/api/table/${a.dataset.dl}/download?fmt=original`;
   }));
   $$("[data-addrow]").forEach((b) => b.addEventListener("click", () => addRow(b.dataset.addrow)));
   $$("[data-delrows]").forEach((b) => b.addEventListener("click", () => deleteSelected(b.dataset.delrows)));
   $$("[data-history]").forEach((b) => b.addEventListener("click", () => openHistory(b.dataset.history)));
   $("[data-close]").addEventListener("click", () => $("#historyDlg").close());
   $("#btnGenerate").addEventListener("click", generate);
+  $("#btnResolve").addEventListener("click", () => resolveSelected("bc", true));
+  $("#btnUnresolve").addEventListener("click", () => resolveSelected("bc", false));
   $("#onlyIssues").addEventListener("change", () => applyFilters("bc"));
   $("#searchBc").addEventListener("input", () => applyFilters("bc"));
   $("#searchQb").addEventListener("input", () => applyFilters("qb"));

@@ -21,7 +21,7 @@ First time:
 ## Tabs
 | Tab | What it does |
 |---|---|
-| Imperial Label (BC) | An Excel-like grid. Double-click or type to edit; paste ranges from Excel; Ctrl+Z undoes. Rows are shaded by confidence (none = 100% → red ≤ 40%). Error cells have a red outline and warning cells an orange one; hover a cell to see why. Clicking a row opens a panel to pick a different FS item. Downloads: BC import layout, full XLSX with confidence/errors, or CSV. |
+| Imperial Label (BC) | An Excel-like grid. Double-click or type to edit; paste ranges from Excel; Ctrl+Z undoes. Rows are shaded by confidence (none = 100% → red ≤ 40%). Error cells have a red outline and warning cells an orange one; hover a cell to see why. Clicking a row opens a panel to pick a different FS item. Download the Imperial configuration package in your uploaded file's layout. Select rows and click ✓ Resolve to clear problems you have fixed. |
 | QuickBooks Source | An editable source list with upload, download and history. |
 | Learned Rules | What the matcher has learned from your edits, with usage counts. You can turn rules on or off, delete them, or export/import them as JSON. |
 | Settings | The FS database and the defaults (Customer No. C0004, Customer Name, No. of copy, first Entry No., …). |
@@ -30,8 +30,15 @@ First time:
 - **Formulas**: type `=` to enter one (e.g. `=D4*2`); the formula bar shows the selected cell's address and formula. Formulas uploaded from Excel/OneDrive are kept. Cells are calculated in the browser by HyperFormula (`static/vendor`, GPLv3). A green corner marks a formula cell. **Fill down** (Ctrl+D) copies the top cell down, shifting references like Excel. Addresses follow the uploaded sheet, so sorting or filtering the grid doesn't change them.
 - **Formatting**: bold/italic/underline (Ctrl+B/I/U), font and fill colour, number format, alignment, wrap, Clear formats, column widths.
 - **Undo/redo**: Ctrl+Z / Ctrl+Y (or the buttons) step back through edits, pastes, formulas, formats, row changes, Generate, uploads and restores.
-- **Download → Original format** gives the table back in the file you uploaded. It keeps the other sheets, title rows, column order and widths, styles, formulas and helper columns, and applies the formats you set in the platform. Excel recalculates when it opens the file. A CSV upload comes back as CSV in its own layout. Tables never uploaded come back as a new workbook with your formulas and formats. The original upload is stored in `data/templates/`. Tables uploaded before this feature need to be uploaded once more to get their layout.
-- The FS Mix Database tab has **Download original file**.
+- **Keys like Excel**:
+  - Typing on a cell replaces its content. F2 or a double-click edits it.
+  - Enter / Shift+Enter move down or up; Tab / Shift+Tab move right or left. While typing, the arrow keys finish the entry and move.
+  - Esc cancels. Delete clears; Backspace clears and starts editing. Ctrl+Enter puts the value into every selected cell.
+  - Ctrl+click or Ctrl+drag adds another selection; Shift+click extends.
+- **Copy / cut / paste**: Ctrl+C or Ctrl+X marks the cells with a moving dashed border (Esc clears it). Pasting from Excel ignores Excel's trailing line break. One value pasted into a selection fills every cell, and a block that runs past the last row adds rows. Copying inside the platform also carries formulas, with references shifted, and formats.
+- **Resolve** (Imperial Label): select rows, for example by Shift+clicking row numbers, and click **✓ Resolve**. Their current problems stop shading the row and leave the error list. New problems still show. **Unresolve** brings them back.
+- **Download** (one button per table: Imperial configuration package, Imperial QB item list, FS database) gives the table back in the file you uploaded. It keeps the other sheets, title rows, column order and widths, styles, formulas and helper columns, and applies the formats you set in the platform. Excel recalculates when it opens the file. A CSV upload comes back as CSV in its own layout. A BC table never uploaded comes back in the standard BC layout (title rows, header on row 3). Formula cells also carry their last calculated value, so Business Central's import reads the numbers. The original upload is stored in `data/templates/`. Tables uploaded before this feature need to be uploaded once more to get their layout.
+- The FS Mix Database tab has **Download FS database** (the original file).
 
 Each table has its own **version history**. Every save, upload, generate or restore creates a version, and you can see what changed in each cell, restore, or download any version.
 

@@ -173,7 +173,9 @@ class Store:
 
     def pattern_count(self, pattern: str) -> int:
         with self.lock:
-            r = self.conn.execute("SELECT COUNT(*) FROM edit_log WHERE pattern=?", (pattern,)).fetchone()
+            # distinct rows: fixing the same row twice must not count as a repeated pattern
+            r = self.conn.execute("SELECT COUNT(DISTINCT COALESCE(row_key, id)) FROM edit_log WHERE pattern=?",
+                                  (pattern,)).fetchone()
         return r[0]
 
     def edit_log(self, limit: int = 300) -> list[dict]:
