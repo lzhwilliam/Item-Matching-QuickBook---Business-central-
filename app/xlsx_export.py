@@ -25,11 +25,14 @@ from xml.sax.saxutils import escape
 import openpyxl
 from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.table import TableColumn
 from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.workbook.properties import CalcProperties
 
-from .io_excel import formula_text, style_of
+from .io_excel import formula_text, heat_fill, style_of
+
+SEV_COLOR = {"error": "FFC62828", "warning": "FFE08A00"}  # the grid's red / orange outlines
 
 NUM_RE = re.compile(r"-?\d+(\.\d+)?")
 Snap = namedtuple("Snap", "value style is_number is_date cached")
@@ -146,7 +149,11 @@ def _fit_ref(ref: str, header_row: int, last_row: int) -> str | None:
 
 
 def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "Sheet1",
-               macro: bool = False) -> bytes:
+               macro: bool = False, analysis: list[dict] | None = None, numeric=(),
+               widen_table: bool = False) -> bytes:
+    """analysis: the matcher's per-row results; when given, rows are shaded by confidence
+    and problem cells outlined like the grid. numeric: columns written as numbers.
+    widen_table: grow the header-row table over every written column as a plain Excel table."""
     sheet = data.get("sheet") or {}
     rows = data.get("rows") or []
     lay = effective_layout(sheet, data.get("columns") or [], skip)
@@ -233,6 +240,11 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
                 cell.value = _typed(row.get(c), snap, want or {})
             if want is not None:  # key present = the platform owns this cell's format
                 apply_style(cell, want)
+            if c in numeric and isinstance(cell.value, str) and NUM_RE.fullmatch(cell.value.strip()):
+                v = cell.value.strip()
+                cell.value = float(v) if "." in v else int(v)
+        if analysis is not None and i < len(analysis):
+            _paint_matcher(ws, out_r, col_pos, styles, analysis[i])
 
     new_last = hr + len(rows)
     if template and old_last > new_last:
@@ -240,6 +252,8 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
     if template:
         for t in ws.tables.values():
             ref = _fit_ref(t.ref, hr, new_last)
+            if ref and widen_table:
+                ref = _widen(ws, t, ref, max(col_pos.values()))
             if ref:
                 t.ref = ref
                 if t.autoFilter is not None:
@@ -248,6 +262,9 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
             ref = _fit_ref(ws.auto_filter.ref, hr, new_last)
             if ref:
                 ws.auto_filter.ref = ref
+    if widen_table and not ws.tables and not ws.auto_filter.ref and col_pos:
+        # no table in the file: at least give every column a filter button
+        ws.auto_filter.ref = f"A{hr}:{get_column_letter(max(col_pos.values()))}{max(new_last, hr + 1)}"
 
     widths = sheet.get("col_widths") or {}
     for c, j in col_pos.items():
@@ -265,6 +282,53 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
     buf = io.BytesIO()
     wb.save(buf)
     return _cache_formula_values(buf.getvalue(), ws.path.lstrip("/"), cached)
+
+
+def _paint_matcher(ws, r: int, col_pos: dict, styles: dict, a: dict):
+    """Shade the row by confidence and outline problem cells, like the grid.
+    Resolved problems are skipped; a fill the user set in the platform wins."""
+    fill = heat_fill(a.get("confidence"))
+    if fill is not None:
+        for c, j in col_pos.items():
+            if (styles.get(c) or {}).get("fill"):
+                continue
+            cell = ws.cell(row=r, column=j)
+            if not isinstance(cell, MergedCell):
+                cell.fill = fill
+    worst = {}
+    for e in a.get("errors") or []:
+        if e.get("resolved") or e.get("col") not in col_pos:
+            continue
+        if worst.get(e["col"]) != "error":
+            worst[e["col"]] = e["sev"]
+    for c, sev in worst.items():
+        cell = ws.cell(row=r, column=col_pos[c])
+        if isinstance(cell, MergedCell):
+            continue
+        side = Side(style="medium", color=SEV_COLOR.get(sev, SEV_COLOR["warning"]))
+        cell.border = Border(left=side, right=side, top=side, bottom=side)
+
+
+def _widen(ws, t, ref: str, last_col: int) -> str:
+    """Make the table a plain Excel table spanning every written column (filter buttons
+    on all of them). XML-map links are dropped: the map itself isn't kept in downloads."""
+    c1, r1, c2, r2 = range_boundaries(ref)
+    c2 = max(c2, last_col)
+    names, seen = [], set()
+    for j in range(c1, c2 + 1):
+        h = ws.cell(row=r1, column=j)
+        name = str(h.value).strip() if h.value not in (None, "") else f"Column{j}"
+        base, k = name, 2
+        while name.lower() in seen:  # Excel needs unique header names
+            name = f"{base}{k}"
+            k += 1
+        seen.add(name.lower())
+        if h.value != name and not isinstance(h, MergedCell):
+            h.value = name
+        names.append(name)
+    t.tableColumns = [TableColumn(id=k + 1, name=n) for k, n in enumerate(names)]
+    t.tableType = None
+    return f"{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}"
 
 
 def write_csv(data: dict, skip=()) -> bytes:

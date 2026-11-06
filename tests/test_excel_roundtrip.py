@@ -135,7 +135,7 @@ def test_original_download_without_upload_and_existing_formats_still_work(client
     x = client.get("/api/table/bc/download", params={"fmt": "original"})
     ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
     header = [c.value for c in ws[3]]  # BC configuration-package layout: header on row 3
-    assert "Item No." in header and "Match Score" not in header  # platform-only columns stay out
+    assert "Item No." in header and header[-1] == "Errors / warnings"  # matcher columns at the end
     j = header.index("Item No.") + 1
     assert ws.cell(row=4, column=j).font.b
     assert ws.cell(row=4, column=header.index("No. of copy") + 1).value == "=1+1"
@@ -184,7 +184,7 @@ def test_bc_never_uploaded_downloads_in_bc_layout(client):
     ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
     assert [ws.cell(row=1, column=j).value for j in (1, 2, 3)] == ["IMPERIAL LABEL", "Imperial Item Label Master", "50024"]
     assert ws.cell(row=3, column=1).value == "Entry No." and ws.cell(row=4, column=7).value == "0010967"
-    assert "Match Score" not in [c.value for c in ws[3]]
+    assert [c.value for c in ws[3]][11:] == ["Match Score", "Match Method", "Matched FS Description", "QB Description", "Errors / warnings"]
 
 
 def test_resolved_rows_hide_known_problems_but_show_new_ones(client):
@@ -217,3 +217,68 @@ def test_word_pattern_needs_two_different_rows(tmp_path):
     assert st.pattern_count(pat) == 1
     st.log_edit("bc", 3, "7156947", "Item Description", "a", "b", pat)
     assert st.pattern_count(pat) == 2
+
+
+def bc_package_workbook() -> bytes:
+    """A synthetic BC configuration package: title rows, header on row 3, an XML-mapped table."""
+    from openpyxl.worksheet.table import Table, TableColumn, TableStyleInfo, XMLColumnProps
+    from app.matcher import BC_COLUMNS
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Imperial Item Label Master"
+    ws["A1"], ws["B1"], ws["C1"] = "IMPERIAL LABEL", "Imperial Item Label Master", "50024"
+    for j, h in enumerate(BC_COLUMNS, start=1):
+        ws.cell(row=3, column=j, value=h)
+    row = ["1", "C0004", "Baugh Supply", "TPC1", 'Onion Yellow Diced 3/8" 4/5lb', '3/8" DICED', "0010967",
+           "4BAG", "5LB", "10074865916063", "0"]
+    for j, v in enumerate(row, start=1):
+        ws.cell(row=4, column=j, value=v)
+    t = Table(displayName="Table5", ref=f"A3:{openpyxl.utils.get_column_letter(len(BC_COLUMNS))}4", tableType="xml")
+    t.tableColumns = [TableColumn(id=k + 1, name=h, xmlColumnPr=XMLColumnProps(
+        mapId=1, xpath=f"/DataList/Item/{k}", xmlDataType="string")) for k, h in enumerate(BC_COLUMNS)]
+    t.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    ws.add_table(t)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_configuration_package_has_matcher_colours_columns_and_one_filterable_table(client):
+    from app.matcher import BC_COLUMNS
+    assert client.post("/api/table/bc/upload", files={"file": ("BC package.xlsx", bc_package_workbook(), XLSX)}).status_code == 200
+    qb = ("Item,Description,Customer Item No,Case Weight,GTIN,Raw Material\n"
+          'Sales IM:0010967,"Onion Yellow Diced 3/8"" 4/5lb",0010967,20,10074865916063,Onion Yellow\n'
+          "Sales IM:6864110,Carrot Diced 1/2in 1/5lb,6864110,5,BADGTIN,Carrot\n"      # invalid GTIN -> error
+          "Sales IM:6523450,Celery Diced 1/4in 1/5lb,6523450,99,10074865935248,Celery\n").encode()  # weight off
+    client.post("/api/table/qb/upload", files={"file": ("qb.csv", qb, "text/csv")})
+    g = client.post("/api/generate", json={"mode": "replace"}).json()
+    by_code = {r["Customer Item Code"]: i for i, r in enumerate(g["rows"])}
+    cel = by_code["6523450"]
+    rows = g["rows"]
+    rows[cel]["_resolved"] = {"errors": [f'{e["col"]}|{e["msg"]}' for e in g["analysis"][cel]["errors"]], "at": "x"}
+    client.post("/api/table/bc/save", json={"rows": rows, "columns": g["columns"]})
+
+    x = client.get("/api/table/bc/download", params={"fmt": "original"})
+    assert x.status_code == 200, x.text
+    ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
+    assert ws["A1"].value == "IMPERIAL LABEL"
+    header = [c.value for c in ws[3]]
+    assert header[:len(BC_COLUMNS)] == BC_COLUMNS
+    assert header[len(BC_COLUMNS):] == ["Match Score", "Match Method", "Matched FS Description",
+                                        "QB Description", "Errors / warnings"]
+    (name, ref), = ws.tables.items()
+    t = ws.tables[name]
+    assert ref == "A3:P6" and t.tableType is None
+    assert [c.name for c in t.tableColumns] == header and all(c.xmlColumnPr is None for c in t.tableColumns)
+
+    def row_of(code):
+        return next(r for r in range(4, 7) if ws.cell(row=r, column=7).value == code)
+    carrot, celery, onion = row_of("6864110"), row_of("6523450"), row_of("0010967")
+    gtin_col = BC_COLUMNS.index("GTIN") + 1
+    assert ws.cell(row=carrot, column=1).fill.fill_type == "solid"            # shaded by confidence
+    assert ws.cell(row=carrot, column=gtin_col).border.left.color.rgb == "FFC62828"  # red error outline
+    assert "⛔" in ws.cell(row=carrot, column=16).value
+    assert isinstance(ws.cell(row=carrot, column=12).value, (int, float))      # Match Score is a number
+    assert ws.cell(row=celery, column=1).fill.fill_type is None               # resolved: not shaded
+    assert ws.cell(row=celery, column=16).value == "✓ resolved"
+    assert ws.cell(row=onion, column=16).value in (None, "")

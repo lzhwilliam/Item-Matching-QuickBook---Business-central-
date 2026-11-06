@@ -38,6 +38,12 @@ First time:
 - **Copy / cut / paste**: Ctrl+C or Ctrl+X marks the cells with a moving dashed border (Esc clears it). Pasting from Excel ignores Excel's trailing line break. One value pasted into a selection fills every cell, and a block that runs past the last row adds rows. Copying inside the platform also carries formulas, with references shifted, and formats.
 - **Resolve** (Imperial Label): select rows, for example by Shift+clicking row numbers, and click **✓ Resolve**. Their current problems stop shading the row and leave the error list. New problems still show. **Unresolve** brings them back.
 - **Download** (one button per table: Imperial configuration package, Imperial QB item list, FS database) gives the table back in the file you uploaded. It keeps the other sheets, title rows, column order and widths, styles, formulas and helper columns, and applies the formats you set in the platform. Excel recalculates when it opens the file. A CSV upload comes back as CSV in its own layout. A BC table never uploaded comes back in the standard BC layout (title rows, header on row 3). Formula cells also carry their last calculated value, so Business Central's import reads the numbers. The original upload is stored in `data/templates/`. Tables uploaded before this feature need to be uploaded once more to get their layout.
+- The **Imperial configuration package** also carries the matcher's view, so problem rows are easy to filter in Excel:
+  - columns Match Score → Errors / warnings
+  - rows shaded by confidence, with red (error) and orange (warning) cell outlines; resolved problems are left out
+  - a single table with a filter button on every column, so Filter by Color works
+
+  It is a working file, not a Business Central-compliant package: the XML map is not kept.
 - The FS Mix Database tab has **Download FS database** (the original file).
 
 Each table has its own **version history**. Every save, upload, generate or restore creates a version, and you can see what changed in each cell, restore, or download any version.

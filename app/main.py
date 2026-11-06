@@ -351,6 +351,7 @@ def download_table(name: str, fmt: str = "xlsx", version: int | None = None):
 
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+ERRORS_COL = "Errors / warnings"
 
 
 def _download_original(name: str, v: dict, base: str) -> Response:
@@ -372,7 +373,19 @@ def _download_original(name: str, v: dict, base: str) -> Response:
         data = dict(data, sheet={**sheet, "kind": "xlsx", "header_row": 3, "last_row": 3, "autosize": True,
                                  "sheet_name": TABLES["bc"]["sheet"][:31], "max_col": len(BC_COLUMNS),
                                  "col_pos": {c: i + 1 for i, c in enumerate(BC_COLUMNS)}})
-    out = write_xlsx(data, template, _skip(name), TABLES[name]["sheet"], macro=macro)
+    extra = {}
+    if name == "bc":
+        # the configuration package carries the matcher's view: its columns, colours and problems
+        analysis = _analysis(data["rows"])
+        rows = []
+        for r, a in zip(data["rows"], analysis):
+            open_ = [e for e in a["errors"] if not e.get("resolved")]
+            txt = "  ·  ".join(f'{"⛔" if e["sev"] == "error" else "⚠"} {e["col"]}: {e["msg"]}' for e in open_)
+            rows.append(dict(r, **{ERRORS_COL: txt or ("✓ resolved" if r.get("_resolved") else "")}))
+        cols = [c for c in data["columns"] if c not in BC_META] + list(BC_META) + [ERRORS_COL]
+        data = dict(data, rows=rows, columns=cols)
+        extra = {"skip": (), "analysis": analysis, "numeric": ("Match Score",), "widen_table": True}
+    out = write_xlsx(data, template, extra.pop("skip", _skip(name)), TABLES[name]["sheet"], macro=macro, **extra)
     ext, mime = (".xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12") if macro else (".xlsx", XLSX_MIME)
     return Response(out, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{fname}{ext}"'})
 
