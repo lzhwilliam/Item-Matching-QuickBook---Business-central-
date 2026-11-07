@@ -284,9 +284,31 @@ def write_xlsx(data: dict, template: bytes | None, skip=(), sheet_title: str = "
     return _cache_formula_values(buf.getvalue(), ws.path.lstrip("/"), cached)
 
 
+_HEAT = re.compile(r"(?:[0-9A-F]{2})?FF([0-9A-F]{2})\1")
+
+
+def _is_matcher_fill(fl) -> bool:
+    """A fill in heat_fill()'s confidence palette (red FF, green = blue)."""
+    try:
+        return fl is not None and fl.fill_type == "solid" and fl.fgColor.type == "rgb" and             bool(_HEAT.fullmatch(str(fl.fgColor.rgb).upper()))
+    except AttributeError:
+        return False
+
+
 def _paint_matcher(ws, r: int, col_pos: dict, styles: dict, a: dict):
     """Shade the row by confidence and outline problem cells, like the grid.
-    Resolved problems are skipped; a fill the user set in the platform wins."""
+    Resolved problems are skipped; a fill the user set in the platform wins.
+    Paint left in the template by an earlier download is cleared first, so fixed or
+    resolved rows don't keep last time's colours."""
+    for c, j in col_pos.items():
+        cell = ws.cell(row=r, column=j)
+        if isinstance(cell, MergedCell):
+            continue
+        if not (styles.get(c) or {}).get("fill") and _is_matcher_fill(cell.fill):
+            cell.fill = PatternFill(fill_type=None)
+        b = cell.border
+        if b is not None and b.left is not None and b.left.style == "medium" and                 b.left.color is not None and b.left.color.rgb in SEV_COLOR.values():
+            cell.border = Border()
     fill = heat_fill(a.get("confidence"))
     if fill is not None:
         for c, j in col_pos.items():

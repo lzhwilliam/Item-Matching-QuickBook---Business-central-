@@ -98,17 +98,27 @@ function buildColumns(name, columns) {
         + (c.getRow().getData()._resolved ? ' <span class="resolved-tick" title="Resolved">✓</span>' : ""),
     });
   }
+  // every stored column is editable like Excel (the matcher columns too; Generate recalculates them)
   for (const c of columns) {
     const meta = BC_META.includes(c);
     cols.push({
       title: c, field: c, width: TABLES[name].widths[c] ? Math.round(TABLES[name].widths[c] * 7 + 5) : (WIDTHS[c] || 120),
-      editor: meta && c !== "Match Score" ? false : cellEditor,
+      editor: cellEditor,
       formatter: cellFormatter, tooltip: cellTooltip, cssClass: meta ? "cell-meta" : "",
     });
   }
   if (name === "bc") {
-    cols.push({
-      title: "Errors / warnings", field: "_errtext", width: 420, editor: false,
+    // the live problem list sits where "Errors / warnings" is in the uploaded file (else last)
+    const pos = TABLES[name].layout?.col_pos || {};
+    const at = pos["Errors / warnings"];
+    let idx = cols.length;
+    if (at) {
+      const after = cols.findIndex((d) => pos[d.field] && pos[d.field] > at);
+      if (after > 0) idx = after;
+    }
+    cols.splice(idx, 0, {
+      title: "Errors / warnings", field: "_errtext", editor: false,
+      width: TABLES[name].widths["Errors / warnings"] ? Math.round(TABLES[name].widths["Errors / warnings"] * 7 + 5) : 420,
       formatter: (c) => {
         const errs = c.getRow().getData()._errs || [];
         return errs.map((e) => `<span class="${e.sev === "error" ? "err-text" : "warn-text"}">${e.sev === "error" ? "⛔" : "⚠"} ${esc(e.msg)}</span>`).join(" · ");

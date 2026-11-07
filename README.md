@@ -44,6 +44,13 @@ First time:
   - a single table with a filter button on every column, so Filter by Color works
 
   It is a working file, not a Business Central-compliant package: the XML map is not kept.
+- **Uploading the configuration package back** keeps your layout:
+  - Your own columns are kept, e.g. **User Comment**. Generate never clears them; it only rewrites the BC and matcher fields.
+  - Header notes, hidden columns, the table and its sort are kept.
+  - "Errors / warnings" stays in its column in the grid and the download, but it is always the live problem list. A row marked "✓ resolved" there stays resolved.
+  - The matcher's old shading and outlines in the file aren't treated as your formats, so they clear once a row is fixed. Fills you chose yourself are kept.
+  - Rows are matched to existing rows by Customer Item Code, then Entry No.
+- Every stored column is editable like Excel, including Match Score, Match Method, Matched FS Description and QB Description. Generate recalculates those four.
 - The FS Mix Database tab has **Download FS database** (the original file).
 
 Each table has its own **version history**. Every save, upload, generate or restore creates a version, and you can see what changed in each cell, restore, or download any version.

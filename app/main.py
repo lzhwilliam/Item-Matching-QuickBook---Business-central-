@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import date
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
@@ -75,7 +77,12 @@ def _payload(name: str, v: dict) -> dict:
     if name == "bc":
         out["analysis"] = _analysis(data["rows"])
     sheet = data.get("sheet") or {}
-    out["layout"] = effective_layout(sheet, data["columns"], _skip(name))
+    if name == "bc":
+        # same layout as the configuration package download: matcher columns and the live
+        # "Errors / warnings" column have their own cells, as in the user's file
+        out["layout"] = effective_layout(sheet, data["columns"] + [ERRORS_COL], ())
+    else:
+        out["layout"] = effective_layout(sheet, data["columns"], _skip(name))
     out["sheet"] = {"kind": sheet.get("kind"), "file_name": sheet.get("file_name"),
                     "col_widths": sheet.get("col_widths") or {}, "template": bool(_template_path(sheet))}
     return out
@@ -99,6 +106,30 @@ def _analysis(rows: list[dict]) -> list[dict]:
         a["confidence"] = max(0, 100 - penalty)
         a["resolved"] = True
     return out
+
+
+_HEAT = re.compile(r"FF([0-9A-F]{2})\1")  # heat_fill() shading: red FF, green = blue
+
+
+def _strip_matcher_paint(row: dict):
+    """A re-uploaded configuration package carries the matcher's own paint (confidence
+    shading) and the template's text format; neither is a format the user chose, so the
+    shading stays live and isn't frozen into the row. Other fills and formats are kept."""
+    styles = row.get("_s")
+    if not styles:
+        return
+    for c in list(styles):
+        st = dict(styles[c])
+        if _HEAT.fullmatch(str(st.get("fill", "")).upper()):
+            st.pop("fill")
+        if st.get("numFmt") == "@":
+            st.pop("numFmt")
+        if st:
+            styles[c] = st
+        else:
+            del styles[c]
+    if not styles:
+        row.pop("_s")
 
 
 def _skip(name: str) -> tuple:
@@ -307,14 +338,44 @@ async def upload_table(name: str, file: UploadFile = File(...), learn: bool = Tr
         missing = [c for c in BC_COLUMNS if c not in cols]
         if len(missing) > 6:
             raise HTTPException(400, f"Doesn't look like a BC Imperial label file (missing {missing})")
-        # carry over row ids by Customer Item Code so the upload is diffed/learned as edits
-        cur = {r.get("Customer Item Code"): r for r in _current("bc")["data"]["rows"]}
+        # "Errors / warnings" is the platform's live column: its place in the file is kept
+        # (sheet col_pos) but its old text isn't stored; "✓ resolved" there marks a resolved row
+        marked = set()
+        if ERRORS_COL in cols:
+            cols = [c for c in cols if c != ERRORS_COL]
+            for i, r in enumerate(rows):
+                if str(r.pop(ERRORS_COL, "")).strip().startswith("✓"):
+                    marked.add(i)
+        # carry over row ids (by Customer Item Code, else Entry No.) so the upload is diffed/learned
+        # as edits, plus each row's Resolve state; two rows never share one id
+        cur_rows = _current("bc")["data"]["rows"]
+        by_code = {str(r.get("Customer Item Code") or "").strip(): r for r in cur_rows
+                   if str(r.get("Customer Item Code") or "").strip()}
+        by_entry = {str(r.get("Entry No.") or "").strip(): r for r in cur_rows
+                    if str(r.get("Entry No.") or "").strip()}
+        taken = set()
         for r in rows:
-            prev = cur.get(r.get("Customer Item Code"))
-            if prev:
+            prev = by_code.get(str(r.get("Customer Item Code") or "").strip())
+            if not prev or prev["_rid"] in taken:
+                prev = by_entry.get(str(r.get("Entry No.") or "").strip())
+            if prev and prev.get("_rid") and prev["_rid"] not in taken:
+                taken.add(prev["_rid"])
                 r["_rid"] = prev["_rid"]
                 for m in BC_META:
                     r.setdefault(m, prev.get(m, ""))
+                if prev.get("_resolved"):
+                    r["_resolved"] = prev["_resolved"]
+            _strip_matcher_paint(r)
+            ms = str(r.get("Match Score", "")).strip()
+            if re.fullmatch(r"-?\d+(\.\d+)?", ms):
+                r["Match Score"] = int(float(ms)) if float(ms).is_integer() else float(ms)
+        pending = [i for i in sorted(marked) if not rows[i].get("_resolved")]
+        if pending:
+            analysis = _analysis(rows)
+            today = date.today().isoformat()
+            for i in pending:
+                rows[i]["_resolved"] = {"errors": [f'{e["col"]}|{e["msg"]}' for e in analysis[i]["errors"]],
+                                            "at": today}
         cols = t["columns"] + [c for c in cols if c not in t["columns"]]
     else:
         cols = [c for c in t["columns"] if c in cols] + [c for c in cols if c not in t["columns"]]
@@ -441,17 +502,26 @@ def run_generate(body: dict = Body(default={})):
     mode = body.get("mode", "replace")
     existing = _current("bc")["data"]["rows"]
     rows, stats = generate(qb, r, store, store.settings(), existing, mode)
-    # keep each regenerated row's formatting and its place in the uploaded file's layout
+    # keep each regenerated row's formatting, Resolve state, place in the uploaded file's layout,
+    # and everything in the user's own columns (e.g. "User Comment"): Generate only rewrites BC fields
+    cur_cols = _current("bc")["data"]["columns"]
+    own = [c for c in cur_cols if c not in TABLES["bc"]["columns"]]
     prev = {p.get("_rid"): p for p in existing if p.get("_rid")}
     for row in rows:
         p = prev.get(row.get("_rid"))
-        if p is not None and p is not row:
-            for k in ("_s", "_row"):
-                if k in p and k not in row:
-                    row[k] = p[k]
+        if p is None or p is row:
+            continue
+        for k in ("_s", "_row", "_resolved"):
+            if k in p and k not in row:
+                row[k] = p[k]
+        for c in own:
+            row.setdefault(c, p.get(c, ""))
+        own_f = {c: f for c, f in (p.get("_f") or {}).items() if c in own}
+        if own_f and "_f" not in row:
+            row["_f"], row["_fr"] = own_f, p.get("_fr")
     note = (f"Generated from QB v{_current('qb')['version_no']}: {stats['code']} by code, "
             f"{stats['description']} by description, {stats['learned']} by learned rule, {stats['none']} unmatched")
-    out = _save("bc", TABLES["bc"]["columns"], rows, "generate", note, learn=False)
+    out = _save("bc", TABLES["bc"]["columns"] + own, rows, "generate", note, learn=False)
     return out | {"stats": stats}
 
 

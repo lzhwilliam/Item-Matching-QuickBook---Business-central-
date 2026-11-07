@@ -282,3 +282,79 @@ def test_configuration_package_has_matcher_colours_columns_and_one_filterable_ta
     assert ws.cell(row=celery, column=1).fill.fill_type is None               # resolved: not shaded
     assert ws.cell(row=celery, column=16).value == "✓ resolved"
     assert ws.cell(row=onion, column=16).value in (None, "")
+
+
+def v30_workbook(rows: list[dict], resolved_code: str) -> bytes:
+    """Shaped like the user's 'Imperial label BC DB_v30': matcher columns, Errors / warnings and
+    a User Comment column inside Table5, header notes, column B hidden, text format, and the
+    matcher's shading baked into a resolved row by an earlier download."""
+    from openpyxl.comments import Comment
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+    from app.matcher import BC_COLUMNS, BC_META
+    cols = BC_COLUMNS + BC_META + ["Errors / warnings", "User Comment"]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Imperial Item Label Master"
+    ws["A1"], ws["B1"], ws["C1"] = "IMPERIAL LABEL", "Imperial Item Label Master", "50024"
+    for j, h in enumerate(cols, start=1):
+        ws.cell(row=3, column=j, value=h)
+    ws["A3"].comment = Comment("Integer", "WILLIAM")
+    for i, r in enumerate(rows):
+        er = 4 + i
+        done = r["Customer Item Code"] == resolved_code
+        for j, h in enumerate(cols, start=1):
+            v = {"Errors / warnings": "✓ resolved" if done else "",
+                 "User Comment": "one GTIN from customer, one from us" if done else ""}.get(h, r.get(h, ""))
+            c = ws.cell(row=er, column=j, value=v if v != "" else None)
+            if j <= len(BC_COLUMNS):
+                c.number_format = "@"
+            if done:
+                c.fill = PatternFill("solid", fgColor="FFFFE3E3")
+    ws.column_dimensions["B"].hidden = True
+    t = Table(displayName="Table5", ref=f"A3:Q{3 + len(rows)}")
+    t.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    ws.add_table(t)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_v30_layout_upload_keeps_comments_resolved_and_order(client):
+    qb = ("Item,Description,Customer Item No,Case Weight,GTIN,Raw Material\n"
+          'Sales IM:0010967,"Onion Yellow Diced 3/8"" 4/5lb",0010967,20,10074865916063,Onion Yellow\n'
+          "Sales IM:6523450,Celery Diced 1/4in 1/5lb,6523450,99,10074865935248,Celery\n").encode()  # weight off
+    client.post("/api/table/qb/upload", files={"file": ("qb.csv", qb, "text/csv")})
+    g = client.post("/api/generate", json={"mode": "replace"}).json()
+    cel = next(i for i, r in enumerate(g["rows"]) if r["Customer Item Code"] == "6523450")
+    assert g["analysis"][cel]["confidence"] < 100
+
+    up = client.post("/api/table/bc/upload", files={"file": ("Imperial label BC DB_v30.xlsx",
+                                                             v30_workbook(g["rows"], "6523450"), XLSX)}).json()
+    assert "Errors / warnings" not in up["columns"] and up["columns"][-1] == "User Comment"
+    row = up["rows"][cel]
+    assert row["_rid"] == g["rows"][cel]["_rid"]                      # same row, not a new one
+    assert row["User Comment"] == "one GTIN from customer, one from us"
+    assert row["_resolved"] and up["analysis"][cel]["confidence"] == 100   # "✓ resolved" kept
+    assert "_s" not in row                                            # matcher shading / @ not frozen in
+    assert isinstance(row["Match Score"], int)
+    pos = up["layout"]["col_pos"]
+    assert pos["Errors / warnings"] == 16 and pos["User Comment"] == 17 and pos["Match Score"] == 12
+
+    g2 = client.post("/api/generate", json={"mode": "replace"}).json()
+    row = g2["rows"][cel]
+    assert "User Comment" in g2["columns"] and row["User Comment"] == "one GTIN from customer, one from us"
+    assert row["_resolved"] and g2["analysis"][cel]["confidence"] == 100
+
+    x = client.get("/api/table/bc/download", params={"fmt": "original"})
+    assert x.status_code == 200, x.text
+    ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
+    header = [c.value for c in ws[3]]
+    assert header[15:] == ["Errors / warnings", "User Comment"] and len(header) == 17
+    r = next(r for r in (4, 5) if ws.cell(row=r, column=7).value == "6523450")
+    assert ws.cell(row=r, column=16).value == "✓ resolved"
+    assert ws.cell(row=r, column=17).value == "one GTIN from customer, one from us"
+    assert ws.cell(row=r, column=1).fill.fill_type is None            # resolved: no shading
+    assert ws.cell(row=r, column=1).number_format == "@"              # the file's text format stays
+    assert ws["A3"].comment and ws["A3"].comment.text == "Integer"
+    assert ws.column_dimensions["B"].hidden
+    assert {n: ref for n, ref in ws.tables.items()} == {"Table5": "A3:Q5"}
